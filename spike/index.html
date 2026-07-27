@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Vision Spike — Signal Trace</title>
+<style>
+  :root {
+    --bg:#09090b; --surface:#131316; --border:#27272a; --text:#fafafa;
+    --muted:#a1a1aa; --dim:#71717a; --accent:#f97316;
+    --lead:#38bdf8; --rear:#f472b6; --good:#22c55e; --bad:#ef4444;
+    --mono: ui-monospace,"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,-apple-system,sans-serif;-webkit-text-size-adjust:100%}
+  body{padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+  .wrap{max-width:760px;margin:0 auto;padding:12px}
+
+  h1{font-size:14px;font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;
+     color:var(--dim);margin:4px 0 12px}
+  h1 b{color:var(--accent)}
+
+  /* stat strip */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);
+    border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:12px}
+  .stat{background:var(--surface);padding:9px 8px;text-align:center}
+  .stat .v{font-family:var(--mono);font-size:21px;font-variant-numeric:tabular-nums;line-height:1.1}
+  .stat .k{font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:var(--dim);
+    text-transform:uppercase;margin-top:3px}
+  .stat .v.warn{color:var(--bad)} .stat .v.ok{color:var(--good)}
+
+  canvas{display:block;width:100%;border-radius:10px;background:#000;border:1px solid var(--border)}
+  #view{aspect-ratio:4/3;object-fit:cover}
+  #trace{height:190px;margin-top:10px}
+
+  .controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  button{flex:1 1 auto;min-width:104px;padding:13px 12px;border-radius:9px;border:1px solid var(--border);
+    background:var(--surface);color:var(--text);font-family:var(--mono);font-size:12px;
+    letter-spacing:.1em;text-transform:uppercase;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--accent);color:#0b0b0c;border-color:var(--accent);font-weight:700}
+  button.rec{background:var(--bad);border-color:var(--bad);color:#fff}
+  button:disabled{opacity:.4}
+
+  .sliders{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px}
+  .slider{display:flex;align-items:center;gap:11px;margin-bottom:9px}
+  .slider:last-child{margin-bottom:0}
+  .slider label{font-family:var(--mono);font-size:10px;letter-spacing:.09em;color:var(--dim);
+    text-transform:uppercase;width:96px;flex:none}
+  .slider input{flex:1;accent-color:var(--accent)}
+  .slider .n{font-family:var(--mono);font-size:12px;width:44px;text-align:right;
+    font-variant-numeric:tabular-nums;color:var(--accent)}
+
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;
+    color:var(--dim);letter-spacing:.07em;margin:8px 0 0}
+  .legend i{display:inline-block;width:9px;height:2px;vertical-align:3px;margin-right:5px}
+
+  #log{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:11px;
+    font-family:var(--mono);font-size:11px;line-height:1.65;color:var(--muted);
+    height:150px;overflow-y:auto;margin-top:12px;white-space:pre-wrap}
+  #log .hi{color:var(--accent)}
+
+  .note{color:var(--dim);font-size:12.5px;line-height:1.55;margin:12px 2px 0}
+  .note b{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Cornerman <b>Vision</b> — Phase 0 Signal Spike</h1>
+
+  <div class="stats">
+    <div class="stat"><div class="v" id="s-fps">—</div><div class="k">Infer FPS</div></div>
+    <div class="stat"><div class="v" id="s-fpp">—</div><div class="k">Frames / punch</div></div>
+    <div class="stat"><div class="v" id="s-count">0</div><div class="k">Punches</div></div>
+    <div class="stat"><div class="v" id="s-conf">—</div><div class="k">Confidence</div></div>
+  </div>
+
+  <canvas id="view"></canvas>
+
+  <div class="controls">
+    <button id="btn-start" class="primary">Start</button>
+    <button id="btn-flip" disabled>Flip Cam</button>
+    <button id="btn-rec" disabled>Record</button>
+    <button id="btn-export" disabled>Export</button>
+  </div>
+
+  <div class="sliders">
+    <div class="slider">
+      <label>Reach thresh</label>
+      <input type="range" id="sl-thresh" min="0.8" max="2" step="0.05" value="1.25">
+      <span class="n" id="v-thresh">1.25</span>
+    </div>
+    <div class="slider">
+      <label>Refractory</label>
+      <input type="range" id="sl-refract" min="60" max="400" step="10" value="140">
+      <span class="n" id="v-refract">140</span>
+    </div>
+    <div class="slider">
+      <label>Min conf</label>
+      <input type="range" id="sl-conf" min="0.1" max="0.6" step="0.05" value="0.3">
+      <span class="n" id="v-conf">0.30</span>
+    </div>
+  </div>
+
+  <canvas id="trace"></canvas>
+  <div class="legend">
+    <span><i style="background:var(--lead)"></i>LEAD REACH</span>
+    <span><i style="background:var(--rear)"></i>REAR REACH</span>
+    <span><i style="background:#52525b"></i>ELBOW ANGLE</span>
+    <span><i style="background:var(--accent)"></i>THRESHOLD</span>
+    <span><i style="background:var(--good)"></i>PUNCH</span>
+  </div>
+
+  <div id="log">Idle. Tap Start and grant camera access.
+Prop the phone at ~45° to your stance, full body in frame.</div>
+
+  <p class="note">
+    <b>What to look for.</b> Sharp isolated spikes crossing the threshold = detectable.
+    A rounded smear, or guard jitter reaching the same height as a punch, = the signal
+    isn't separable and the product narrows to work rate + guard only.
+    <b>Frames/punch under 4</b> means classification is dead on arrival.
+    Record a round, export the JSON, and keep it — that trace is the evidence.
+  </p>
+</div>
+
+<!--
+  UMD builds, deliberately — the `+esm` variants of pose-detection pull in a broken
+  @mediapipe/pose transitive dependency that fails to provide its `Pose` export.
+  tfjs-converter is required: MoveNet ships as a graph model and won't load without it.
+-->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.22.0/dist/tf-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.22.0/dist/tf-converter.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.22.0/dist/tf-backend-webgl.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const view = $('view'), vctx = view.getContext('2d');
+const trace = $('trace'), tctx = trace.getContext('2d');
+
+let video, detector, running = false, facing = 'environment';
+let recording = false, samples = [], punches = [];
+let frames = 0, fpsT = performance.now(), fps = 0;
+let lastT = 0;
+
+const HIST = 260;
+const hist = { lead: [], rear: [], leadAng: [], rearAng: [], mark: [] };
+
+const cfg = { thresh: 1.25, refract: 140, minConf: 0.30 };
+for (const [sl, v, key, fmt] of [
+  ['sl-thresh','v-thresh','thresh', x=>x.toFixed(2)],
+  ['sl-refract','v-refract','refract', x=>String(Math.round(x))],
+  ['sl-conf','v-conf','minConf', x=>x.toFixed(2)],
+]) {
+  $(sl).addEventListener('input', e => {
+    cfg[key] = parseFloat(e.target.value); $(v).textContent = fmt(cfg[key]);
+  });
+}
+
+function log(msg, hi) {
+  const el = $('log');
+  el.innerHTML += `\n${hi ? '<span class="hi">' : ''}${msg}${hi ? '</span>' : ''}`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ---- geometry helpers -------------------------------------------------
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+function angleAt(v, a, b) {              // angle at joint v between rays v→a and v→b
+  const ax = a.x - v.x, ay = a.y - v.y, bx = b.x - v.x, by = b.y - v.y;
+  const d = (Math.hypot(ax, ay) * Math.hypot(bx, by)) || 1e-6;
+  return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / d))) * 180 / Math.PI;
+}
+
+// ---- per-side punch state machine -------------------------------------
+// A punch = reach rises above threshold, then retracts below it again.
+// Duration between those crossings, in FRAMES, is the number we care about.
+const side = {
+  lead: { up: false, t0: 0, f0: 0, peak: 0, last: -1e9 },
+  rear: { up: false, t0: 0, f0: 0, peak: 0, last: -1e9 },
+};
+let fppSum = 0, fppN = 0;
+
+function step(name, reach, ang, t, frameNo) {
+  const s = side[name];
+  if (!s.up && reach > cfg.thresh && (t - s.last) > cfg.refract) {
+    s.up = true; s.t0 = t; s.f0 = frameNo; s.peak = reach; s.peakAng = ang;
+  } else if (s.up) {
+    if (reach > s.peak) { s.peak = reach; s.peakAng = ang; }
+    if (reach < cfg.thresh * 0.92) {          // hysteresis on the way down
+      s.up = false; s.last = t;
+      const dur = t - s.t0, nf = frameNo - s.f0;
+      if (nf >= 1 && dur < 900) {
+        fppSum += nf; fppN++;
+        punches.push({ hand: name, t: Math.round(s.t0), ms: Math.round(dur),
+                       frames: nf, peak: +s.peak.toFixed(3), elbow: Math.round(s.peakAng) });
+        $('s-count').textContent = punches.length;
+        $('s-fpp').textContent = (fppSum / fppN).toFixed(1);
+        $('s-fpp').className = 'v ' + (fppSum / fppN < 4 ? 'warn' : 'ok');
+        log(`${name.toUpperCase()} · ${Math.round(dur)}ms · ${nf}f · peak ${s.peak.toFixed(2)} · elbow ${Math.round(s.peakAng)}°`, true);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// ---- main loop --------------------------------------------------------
+async function onFrame(now) {
+  if (!running) return;
+
+  const poses = await detector.estimatePoses(video, { maxPoses: 1, flipHorizontal: false });
+  const t = performance.now();
+  frames++;
+  if (t - fpsT >= 500) {
+    fps = frames * 1000 / (t - fpsT); frames = 0; fpsT = t;
+    $('s-fps').textContent = fps.toFixed(0);
+    $('s-fps').className = 'v ' + (fps < 20 ? 'warn' : 'ok');
+  }
+
+  vctx.drawImage(video, 0, 0, view.width, view.height);
+
+  let fired = false;
+  if (poses[0]) {
+    const kp = poses[0].keypoints;
+    const g = i => kp[i];
+    const meanConf = kp.reduce((a, k) => a + k.score, 0) / kp.length;
+    $('s-conf').textContent = meanConf.toFixed(2);
+    $('s-conf').className = 'v ' + (meanConf < 0.3 ? 'warn' : 'ok');
+
+    drawSkeleton(kp);
+
+    const scale = dist(g(5), g(6)) || 1e-6;           // shoulder width = body scale
+    const ok = k => k.score >= cfg.minConf;
+
+    const sides = {
+      lead: { sh: g(5), el: g(7), wr: g(9) },          // left
+      rear: { sh: g(6), el: g(8), wr: g(10) },         // right
+    };
+    const row = { t: Math.round(t), fps: +fps.toFixed(1), conf: +meanConf.toFixed(3) };
+
+    for (const [name, j] of Object.entries(sides)) {
+      if (!(ok(j.sh) && ok(j.el) && ok(j.wr))) { pushHist(name, null, null); continue; }
+      const reach = dist(j.wr, j.sh) / scale;
+      const ang = angleAt(j.el, j.sh, j.wr);
+      pushHist(name, reach, ang);
+      row[name] = { reach: +reach.toFixed(3), elbow: +ang.toFixed(1) };
+      if (step(name, reach, ang, t, Math.round(t / (1000 / Math.max(fps, 1))))) fired = true;
+    }
+    if (recording) samples.push(row);
+  } else {
+    pushHist('lead', null, null); pushHist('rear', null, null);
+  }
+
+  hist.mark.push(fired ? 1 : 0);
+  if (hist.mark.length > HIST) hist.mark.shift();
+  drawTrace();
+
+  lastT = t;
+  schedule();
+}
+
+function pushHist(name, reach, ang) {
+  const r = hist[name], a = hist[name + 'Ang'];
+  r.push(reach); a.push(ang);
+  if (r.length > HIST) { r.shift(); a.shift(); }
+}
+
+const SKEL = [[5,6],[5,7],[7,9],[6,8],[8,10],[5,11],[6,12],[11,12],[11,13],[13,15],[12,14],[14,16]];
+function drawSkeleton(kp) {
+  const sx = view.width / video.videoWidth, sy = view.height / video.videoHeight;
+  vctx.lineWidth = 3; vctx.strokeStyle = '#22c55e';
+  for (const [a, b] of SKEL) {
+    if (kp[a].score < cfg.minConf || kp[b].score < cfg.minConf) continue;
+    vctx.beginPath();
+    vctx.moveTo(kp[a].x * sx, kp[a].y * sy);
+    vctx.lineTo(kp[b].x * sx, kp[b].y * sy);
+    vctx.stroke();
+  }
+  for (const i of [9, 10]) {                        // wrists get emphasis
+    if (kp[i].score < cfg.minConf) continue;
+    vctx.fillStyle = i === 9 ? '#38bdf8' : '#f472b6';
+    vctx.beginPath(); vctx.arc(kp[i].x * sx, kp[i].y * sy, 7, 0, 7); vctx.fill();
+  }
+}
+
+function drawTrace() {
+  const W = trace.width, H = trace.height;
+  tctx.clearRect(0, 0, W, H);
+  tctx.fillStyle = '#000'; tctx.fillRect(0, 0, W, H);
+
+  const RMAX = 2.2, step = W / HIST;
+
+  // threshold line
+  const ty = H - (cfg.thresh / RMAX) * H;
+  tctx.strokeStyle = '#f97316'; tctx.setLineDash([5, 5]); tctx.lineWidth = 1.5;
+  tctx.beginPath(); tctx.moveTo(0, ty); tctx.lineTo(W, ty); tctx.stroke();
+  tctx.setLineDash([]);
+
+  // elbow angle (0-180 mapped to full height), drawn behind
+  for (const [key, col] of [['leadAng', '#3f3f46'], ['rearAng', '#52525b']]) {
+    tctx.strokeStyle = col; tctx.lineWidth = 1; tctx.beginPath();
+    let started = false;
+    hist[key].forEach((v, i) => {
+      if (v == null) { started = false; return; }
+      const x = i * step, y = H - (v / 180) * H;
+      started ? tctx.lineTo(x, y) : (tctx.moveTo(x, y), started = true);
+    });
+    tctx.stroke();
+  }
+
+  // reach traces
+  for (const [key, col] of [['lead', '#38bdf8'], ['rear', '#f472b6']]) {
+    tctx.strokeStyle = col; tctx.lineWidth = 2; tctx.beginPath();
+    let started = false;
+    hist[key].forEach((v, i) => {
+      if (v == null) { started = false; return; }
+      const x = i * step, y = H - Math.min(v / RMAX, 1) * H;
+      started ? tctx.lineTo(x, y) : (tctx.moveTo(x, y), started = true);
+    });
+    tctx.stroke();
+  }
+
+  // punch markers
+  tctx.fillStyle = '#22c55e';
+  hist.mark.forEach((m, i) => { if (m) tctx.fillRect(i * step - 1, 0, 2.5, H); });
+}
+
+function schedule() {
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    video.requestVideoFrameCallback(onFrame);       // per decoded frame — the correct primitive
+  } else {
+    requestAnimationFrame(onFrame);                 // fallback; will duplicate/skip frames
+  }
+}
+
+// ---- lifecycle --------------------------------------------------------
+async function openCamera() {
+  if (video?.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: facing, width: { ideal: 640 }, height: { ideal: 480 },
+             frameRate: { ideal: 60 } },
+    audio: false,
+  });
+  video = video || Object.assign(document.createElement('video'),
+    { playsInline: true, muted: true, autoplay: true });
+  video.setAttribute('playsinline', '');
+  video.srcObject = stream;
+  await video.play();
+
+  const s = stream.getVideoTracks()[0].getSettings();
+  view.width = 640; view.height = 480;
+  trace.width = trace.clientWidth * 2; trace.height = 380;
+  log(`Camera ${s.width}×${s.height} @ ${s.frameRate || '?'}fps requested`, true);
+}
+
+$('btn-start').addEventListener('click', async () => {
+  const b = $('btn-start');
+  if (running) {
+    running = false; b.textContent = 'Start'; b.classList.add('primary');
+    log('Stopped.'); return;
+  }
+  b.disabled = true; b.textContent = 'Loading…';
+  try {
+    await openCamera();
+    if (!detector) {
+      await tf.setBackend('webgl'); await tf.ready();
+      log(`Backend: ${tf.getBackend()}`);
+      detector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING });
+
+      // Warm up. The first inference compiles shaders and takes seconds —
+      // without this it lands inside the first FPS window and reports a lie.
+      b.textContent = 'Warming…';
+      const warm = document.createElement('canvas'); warm.width = warm.height = 192;
+      const t0 = performance.now();
+      await detector.estimatePoses(warm);
+      log(`MoveNet Lightning ready — warmup ${Math.round(performance.now() - t0)}ms.`, true);
+    }
+    running = true;
+    b.disabled = false; b.textContent = 'Stop'; b.classList.remove('primary');
+    ['btn-flip', 'btn-rec', 'btn-export'].forEach(i => $(i).disabled = false);
+    fpsT = performance.now(); frames = 0;
+    schedule();
+  } catch (err) {
+    b.disabled = false; b.textContent = 'Start';
+    log(`ERROR: ${err.message}`, true);
+    log('Camera needs HTTPS or localhost. On a phone, deploy it — a LAN IP over http will be blocked.');
+  }
+});
+
+$('btn-flip').addEventListener('click', async () => {
+  facing = facing === 'environment' ? 'user' : 'environment';
+  await openCamera(); log(`Camera → ${facing}`);
+});
+
+$('btn-rec').addEventListener('click', () => {
+  recording = !recording;
+  const b = $('btn-rec');
+  b.textContent = recording ? 'Stop Rec' : 'Record';
+  b.classList.toggle('rec', recording);
+  if (recording) { samples = []; punches = []; fppSum = fppN = 0;
+    $('s-count').textContent = '0'; log('● Recording…', true); }
+  else log(`Recorded ${samples.length} frames, ${punches.length} punches.`, true);
+});
+
+$('btn-export').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify({
+    ua: navigator.userAgent, cfg,
+    meanFps: +fps.toFixed(1),
+    framesPerPunch: fppN ? +(fppSum / fppN).toFixed(2) : null,
+    punches, samples,
+  }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `vision-spike-${Date.now()}.json`;
+  a.click();
+  log('Exported.', true);
+});
+</script>
+</body>
+</html>

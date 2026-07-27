@@ -1,0 +1,9 @@
+# Vercel link state and the OIDC token it writes
+.vercel
+.env*
+
+# OS cruft
+.DS_Store
+
+# Phase 0 spike exports — captured trace data, not source
+vision-spike-*.json

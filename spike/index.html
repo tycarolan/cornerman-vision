@@ -86,6 +86,34 @@
     margin-top:9px;line-height:1.5;white-space:pre-wrap}
   .bstat b{color:var(--accent)}
 
+  /* Session progress. The gym failure mode is losing track of which cells are
+     done between blocks, so this is built to be read in about a second from
+     several feet away: one row per model, one cell per punch number. */
+  .progress{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    padding:12px;margin-bottom:12px}
+  .phead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+    font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--dim)}
+  .phead .count{color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.04em}
+  .pstage{margin-top:12px}
+  .pstage h3{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--dim);font-weight:400;margin:0 0 5px}
+  .pstage h3 em{color:var(--muted);font-style:normal}
+  .prow{display:grid;gap:3px;align-items:center;margin-bottom:3px}
+  .prow:last-child{margin-bottom:0}
+  .prow-label{font-family:var(--mono);font-size:10px;letter-spacing:.05em;color:var(--muted);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prow.out .prow-label{color:var(--dim);text-decoration:line-through}
+  .prow.pending .prow-label{color:var(--dim)}
+  .pcell{height:23px;border-radius:5px;border:1px solid var(--border);background:var(--bg);
+    display:flex;align-items:center;justify-content:center;color:var(--dim);
+    font-family:var(--mono);font-size:9.5px;font-variant-numeric:tabular-nums}
+  .pcell.done{background:rgba(34,197,94,.15);border-color:var(--good);color:var(--good)}
+  .pcell.live{border-color:var(--accent);color:var(--accent)}
+  .pcell.out{opacity:.25}
+  .pnote{font-family:var(--mono);font-size:10px;line-height:1.6;color:var(--dim);
+    letter-spacing:.03em;margin-top:11px;white-space:pre-wrap}
+
   .sliders{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px}
   .slider{display:flex;align-items:center;gap:11px;margin-bottom:9px}
   .slider:last-child{margin-bottom:0}
@@ -152,6 +180,13 @@
       </div>
     </div>
     <div class="brow">
+      <label>Stance</label>
+      <div class="seg" id="seg-stance">
+        <button data-stance="orthodox" class="on">Orthodox</button>
+        <button data-stance="southpaw">Southpaw</button>
+      </div>
+    </div>
+    <div class="brow">
       <label>Throwing</label>
       <select id="sel-punch">
         <option value="jab">1 · Jab (lead)</option>
@@ -169,6 +204,15 @@
       <button id="btn-block" style="flex:1" disabled>Start Block</button>
     </div>
     <div class="bstat" id="b-stat">No block running. Declare what you are about to throw, then Start Block.</div>
+  </div>
+
+  <div class="progress" id="progress">
+    <div class="phead">
+      <span>Session progress</span>
+      <span class="count" id="p-count">—</span>
+    </div>
+    <div id="p-stages"></div>
+    <div class="pnote" id="p-note"></div>
   </div>
 
   <div class="sliders">
@@ -215,6 +259,15 @@ Prop the phone at ~45° to your stance, full body in frame.</div>
     session. <b>Reload the page to start a clean session</b> — nothing else clears it.
     Full procedure: <code>docs/knowledge/processes/capture-protocol.md</code>.
   </p>
+  <p class="note">
+    <b>Set stance before the first block.</b> Lead and rear are boxing roles; the pose model
+    reports anatomical left and right. They coincide only for an orthodox operator, so a
+    southpaw left on the default inverts <code>detectedOnDeclaredHand</code> — the number the
+    model decision turns on — and nothing in the trace afterwards reveals it.
+    <b>Session progress</b> tracks the protocol's five stages, not every model × punch × context
+    combination: stage A drops models under 4 frames per punch, and stages B and C only ask for
+    what survives. It resets with the page, like everything else here.
+  </p>
 </div>
 
 <!--
@@ -255,6 +308,13 @@ const HAND_OF = {
   'freestyle': null,
 };
 let blocks = [], curBlock = null, blockSeq = 0, context = 'shadow';
+
+// Stance. Pose models report anatomical left and right; boxing cares about lead
+// and rear, and the two only coincide for an orthodox operator. A southpaw leads
+// with the right, so `detectedOnDeclaredHand` — the number the model decision
+// turns on — inverts unless stance is declared. Everything downstream of the
+// mapping below is named for the boxing role, never the side of the body.
+let stance = 'orthodox';
 
 const HIST = 260;
 const hist = { lead: [], rear: [], leadAng: [], rearAng: [], mark: [] };
@@ -337,6 +397,15 @@ const MODELS = {
 };
 let modelKey = 'movenet-lightning', M = MODELS[modelKey];
 let usingDepth = false;
+
+// The one place anatomical side and boxing role are reconciled. Called rather
+// than cached because both inputs — the model's keypoint layout and the declared
+// stance — change during a session.
+function sideIndices() {
+  const K = M.kp;
+  const left = [K.lsh, K.lel, K.lwr], right = [K.rsh, K.rel, K.rwr];
+  return stance === 'southpaw' ? { lead: right, rear: left } : { lead: left, rear: right };
+}
 
 // ---- per-side punch state machine -------------------------------------
 // A punch = reach rises above threshold, then retracts below it again.
@@ -422,7 +491,7 @@ async function onFrame(now, metadata) {
     }
     const ok = k => k.score >= cfg.minConf;
 
-    const idx = { lead: [K.lsh, K.lel, K.lwr], rear: [K.rsh, K.rel, K.rwr] };
+    const idx = sideIndices();
     const row = { t: Math.round(t), f: frameNo, fps: +fps.toFixed(1),
                   conf: +meanConf.toFixed(3), d3: has3 };
 
@@ -472,7 +541,10 @@ function drawSkeleton(kp) {
     vctx.lineTo(kp[b].x, kp[b].y);
     vctx.stroke();
   }
-  for (const [i, col] of [[M.kp.lwr, '#38bdf8'], [M.kp.rwr, '#f472b6']]) {
+  // Wrist dots follow the lead/rear colours in the trace legend, so a southpaw
+  // sees the blue dot on the hand the blue trace is plotting.
+  const wr = sideIndices();
+  for (const [i, col] of [[wr.lead[2], '#38bdf8'], [wr.rear[2], '#f472b6']]) {
     if (!kp[i] || kp[i].score < cfg.minConf) continue;
     vctx.fillStyle = col;
     vctx.beginPath(); vctx.arc(kp[i].x, kp[i].y, 7, 0, 7); vctx.fill();
@@ -632,6 +704,7 @@ $('btn-flip').addEventListener('click', async () => {
 
 // ---- block lifecycle --------------------------------------------------
 function paintBlock() {
+  paintProgress();   // blocks and punches are the only inputs the panel has
   const el = $('b-stat');
   if (!curBlock) {
     el.textContent = blocks.length
@@ -648,7 +721,7 @@ function paintBlock() {
 function openBlock(label, expected) {
   if (curBlock) closeBlock();
   curBlock = {
-    id: ++blockSeq, label, hand: HAND_OF[label] ?? null, context,
+    id: ++blockSeq, label, hand: HAND_OF[label] ?? null, context, stance,
     model: modelKey, depthActive: usingDepth, expected,
     t0: Math.round(performance.now()), f0: frameNo,
     detected: 0, detectedOnDeclaredHand: 0,
@@ -683,6 +756,171 @@ function paintButtons() {
   $('blockbar').classList.toggle('live', !!curBlock);
 }
 
+// ---- session progress -------------------------------------------------
+// A pure view over `blocks`. It records nothing and is reachable from no capture
+// path, so it cannot corrupt a session — the worst it can do is mislead.
+//
+// It mirrors `docs/knowledge/processes/capture-protocol.md` rather than the full
+// 4 × 6 × 2 cross-product, deliberately. The protocol prunes: stage A drops any
+// model under the frames-per-punch floor, stage B runs only for the survivors,
+// and stage C runs three punch types against two models. Rendering all 48
+// combinations would show roughly 28 cells the protocol never asks for — which
+// is the same lost-track-of-what-is-left problem wearing a grid.
+const PUNCH_TYPES = ['jab', 'cross', 'lead-hook', 'rear-hook', 'lead-uppercut', 'rear-uppercut'];
+const BAG_TYPES = ['jab', 'cross', 'lead-hook'];      // protocol, stage C
+const PUNCH_NUM = { 'jab': '1', 'cross': '2', 'lead-hook': '3',
+                    'rear-hook': '4', 'lead-uppercut': '5', 'rear-uppercut': '6' };
+const MODEL_SHORT = { 'movenet-lightning': 'MN·L', 'movenet-thunder': 'MN·T',
+                      'blazepose-lite': 'BP·L', 'blazepose-full': 'BP·F' };
+const BASELINE = 'movenet-lightning';   // stage C's fixed comparison point
+const FPP_FLOOR = 4;                    // frames/punch below which a model is out
+const ROUND_MS = 120000;                // stage D is a full round, not a triage burst
+
+const allBlocks = () => curBlock ? [...blocks, curBlock] : blocks;
+const spanMs = b => (b.t1 ?? Math.round(performance.now())) - b.t0;
+const freestyleOf = m => allBlocks().filter(b => b.model === m && b.label === 'freestyle');
+
+// Measured, from the frame counter carried on each punch record — never
+// reconstructed from wall-clock time, which ran 28% low when it was.
+function blockFpp(b) {
+  const ps = punches.filter(p => p.b === b.id);
+  return ps.length ? ps.reduce((a, p) => a + p.frames, 0) / ps.length : null;
+}
+
+// 'pending' — not triaged yet, so both its stage A and its stage B are still
+// owed. 'out' — measured below the floor, and the protocol says not to spend
+// twenty minutes of labelled blocks on it. 'nofpp' — triaged, but no punch
+// landed, so there is nothing to judge it on and it stays in play.
+function triage(m) {
+  const fb = freestyleOf(m);
+  if (!fb.length) return { state: 'pending', fpp: null };
+  const vals = fb.map(blockFpp).filter(v => v !== null);
+  if (!vals.length) return { state: 'nofpp', fpp: null };
+  const fpp = vals.reduce((a, b) => a + b, 0) / vals.length;
+  return { state: fpp < FPP_FLOOR ? 'out' : 'in', fpp };
+}
+
+/** Summed detections for one model × punch type × context, or null if unrecorded. */
+function cellStat(m, label, ctx) {
+  const bs = allBlocks().filter(b => b.model === m && b.label === label && b.context === ctx);
+  if (!bs.length) return null;
+  return {
+    exp: bs.reduce((a, b) => a + (b.expected || 0), 0),
+    det: bs.reduce((a, b) => a + b.detected, 0),
+    open: bs.includes(curBlock),
+  };
+}
+
+function labelledCells(m, types, ctx) {
+  return types.map(l => {
+    const s = cellStat(m, l, ctx);
+    return {
+      done: !!s,
+      text: s ? (s.exp ? `${s.det}/${s.exp}` : '✓') : PUNCH_NUM[l],
+      cls: s ? (s.open ? 'live' : 'done') : '',
+    };
+  });
+}
+
+function gridRows(cols, rows) {
+  const style = `grid-template-columns:54px repeat(${cols},1fr)`;
+  return rows.map(r =>
+    `<div class="prow ${r.cls || ''}" style="${style}">`
+    + `<span class="prow-label">${r.label}</span>`
+    + r.cells.map(c => `<span class="pcell ${c.cls || ''}">${c.text}</span>`).join('')
+    + '</div>').join('');
+}
+
+const stageBlock = (head, cols, rows) =>
+  `<div class="pstage"><h3>${head}</h3>${gridRows(cols, rows)}</div>`;
+
+function paintProgress() {
+  const models = Object.keys(MODELS);
+  const tri = Object.fromEntries(models.map(m => [m, triage(m)]));
+  const html = [];
+  let need = 0, have = 0, next = null;
+  const owe = what => { if (!next) next = what; };
+
+  // Stage A — triage. Every model needs its thirty seconds, including ones that
+  // will fail it; a model with no freestyle block has not been ruled out, it has
+  // been skipped, and those look identical in an export.
+  const aRows = models.map(m => {
+    const { state, fpp } = tri[m];
+    const done = state !== 'pending';
+    if (!done) owe(`stage A · freestyle 30s on ${MODEL_SHORT[m]}`);
+    return {
+      label: MODEL_SHORT[m],
+      cls: state === 'out' ? 'out' : state === 'pending' ? 'pending' : '',
+      cells: [{
+        done,
+        text: !done ? '30s freestyle'
+          : fpp === null ? 'no punches — not judgeable'
+          : `${fpp.toFixed(1)} f/p · ${state === 'out' ? 'OUT' : 'in play'}`,
+        cls: !done ? '' : state === 'out' ? 'out' : 'done',
+      }],
+    };
+  });
+  need += aRows.length;
+  have += aRows.filter(r => r.cells[0].done).length;
+  html.push(stageBlock(`A · triage <em>drop under ${FPP_FLOOR} f/p</em>`, 1, aRows));
+
+  // Stage B — labelled blocks, shadowboxing, for every model still in play.
+  const inPlay = models.filter(m => tri[m].state !== 'out');
+  const bRows = inPlay.map(m => {
+    const cells = labelledCells(m, PUNCH_TYPES, 'shadow');
+    cells.forEach((c, i) => { if (!c.done) owe(`stage B · ${PUNCH_TYPES[i]} ×10 on ${MODEL_SHORT[m]}, shadowbox`); });
+    return { label: MODEL_SHORT[m], cls: tri[m].state === 'pending' ? 'pending' : '', cells };
+  });
+  need += bRows.length * PUNCH_TYPES.length;
+  have += bRows.reduce((a, r) => a + r.cells.filter(c => c.done).length, 0);
+  html.push(stageBlock('B · shadowbox <em>10 reps each</em>', PUNCH_TYPES.length, bRows));
+
+  // Stage C — bag, three punch types, on the baseline plus the frontrunner. The
+  // frontrunner is whichever other model you start throwing bag blocks on; until
+  // then it is an empty row, because the cells are owed either way.
+  const cModels = [BASELINE, ...new Set(allBlocks()
+    .filter(b => b.context === 'bag' && b.model !== BASELINE).map(b => b.model))];
+  const cRows = cModels.map(m => {
+    const cells = labelledCells(m, BAG_TYPES, 'bag');
+    cells.forEach((c, i) => { if (!c.done) owe(`stage C · ${BAG_TYPES[i]} ×10 on ${MODEL_SHORT[m]}, bag`); });
+    return { label: MODEL_SHORT[m], cells };
+  });
+  if (cModels.length === 1) {
+    cRows.push({ label: 'front·', cls: 'pending',
+                 cells: BAG_TYPES.map(l => ({ done: false, text: PUNCH_NUM[l], cls: '' })) });
+    owe('stage C · pick a frontrunner and run its bag blocks');
+  }
+  need += cRows.length * BAG_TYPES.length;
+  have += cRows.reduce((a, r) => a + r.cells.filter(c => c.done).length, 0);
+  html.push(stageBlock('C · bag <em>baseline + frontrunner</em>', BAG_TYPES.length, cRows));
+
+  // Stage D — the full round. This is the only stage that measures the product
+  // rather than the model, and it is acceptance criterion 2.
+  const round = allBlocks().find(b => b.label === 'freestyle' && spanMs(b) >= ROUND_MS);
+  if (!round) owe(`stage D · one ${ROUND_MS / 60000}min freestyle round, hand-counted`);
+  need += 1; have += round ? 1 : 0;
+
+  // Stage E — the thermal control. Without a re-run on the first model tested, a
+  // framerate decline across the session is indistinguishable from a difference
+  // between models, because the phone got hotter in the order they were tested.
+  const first = allBlocks()[0]?.model ?? null;
+  const thermal = !!first && freestyleOf(first).length >= 2;
+  if (!thermal) owe(first ? `stage E · re-run 30s freestyle on ${MODEL_SHORT[first]}` : 'stage E · after stage A');
+  need += 1; have += thermal ? 1 : 0;
+
+  html.push(stageBlock('D · round &nbsp; E · thermal control', 1, [
+    { label: 'round', cells: [{ done: !!round, cls: round ? 'done' : '',
+        text: round ? `${MODEL_SHORT[round.model]} · ${Math.round(spanMs(round) / 1000)}s`
+                    : `freestyle ≥ ${ROUND_MS / 1000}s` }] },
+    { label: 'thermal', cells: [{ done: thermal, cls: thermal ? 'done' : '',
+        text: thermal ? `${MODEL_SHORT[first]} re-run` : 'repeat the first model tested' }] },
+  ]));
+
+  $('p-stages').innerHTML = html.join('');
+  $('p-count').textContent = `${have} / ${need}`;
+  $('p-note').textContent = next ? `Next: ${next}` : 'Every cell the protocol asks for is recorded.';
+}
+
 $('seg-ctx').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   context = b.dataset.ctx;
@@ -690,6 +928,22 @@ $('seg-ctx').addEventListener('click', e => {
   // A block carries the context it was opened with; changing it mid-block would
   // relabel data already captured, so the change applies to the next block only.
   log(`Context → ${context}${curBlock ? ' (applies to the next block)' : ''}`);
+});
+
+// Unlike context, stance changes how the live frame is interpreted — the lead
+// and rear traces swap the instant it flips. Applying it to the next block only
+// would be a lie about the frames still arriving, so an open block closes here
+// for the same reason a model switch closes one.
+$('seg-stance').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b || b.dataset.stance === stance) return;
+  if (curBlock) { log('Stance changed mid-block — closing it first.', true); closeBlock(); }
+  stance = b.dataset.stance;
+  [...e.currentTarget.children].forEach(c => c.classList.toggle('on', c === b));
+  // A side left mid-punch would resume against the opposite wrist.
+  for (const s of Object.values(side)) { s.up = false; s.last = -1e9; }
+  for (const k of ['lead', 'rear', 'leadAng', 'rearAng', 'mark']) hist[k].length = 0;
+  log(`Stance → ${stance} · lead hand is now the `
+    + `${stance === 'southpaw' ? 'right' : 'left'}`, true);
 });
 
 $('btn-block').addEventListener('click', () => {
@@ -711,8 +965,11 @@ function buildPayload() {
   return {
     // Bumped whenever the shape below changes. The analyzer refuses versions it
     // does not know rather than misreading fields that moved.
-    schema: 2,
+    schema: 3,
     ua: navigator.userAgent, cfg,
+    // Stance at export time. The per-block field is authoritative, for the same
+    // reason the per-block model is: a session can change either one.
+    stance,
     model: modelKey, depthActive: usingDepth,
     modelsUsed: [...new Set(allBlocks.map(b => b.model))],
     // meanFps over the whole run, from the real frame counter — not the last
@@ -745,6 +1002,10 @@ $('btn-copy').addEventListener('click', async () => {
     log(`Clipboard blocked: ${err.message} — use Export instead.`, true);
   }
 });
+
+// Paint the empty checklist before anything is recorded, so the session plan is
+// readable while the phone is still being propped up.
+paintProgress();
 </script>
 </body>
 </html>

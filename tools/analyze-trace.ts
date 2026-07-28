@@ -44,7 +44,8 @@ function table(headers: string[], rows: (string | number | null)[][]): string {
 function report(file: string, a: Analysis): string {
   const out: string[] = [];
   out.push(`\n══ ${file}`);
-  out.push(`   schema ${a.schema} · ${a.modelsUsed.join(', ')}`);
+  out.push(`   schema ${a.schema} · ${a.modelsUsed.join(', ')}`
+    + `   stance ${a.stances.length ? a.stances.join(', ') : 'undeclared'}`);
   out.push(`   thresh ${a.config.thresh} · refract ${a.config.refract}ms · minConf ${a.config.minConf}`);
 
   if (a.caveats.length) {

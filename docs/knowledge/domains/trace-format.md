@@ -8,7 +8,17 @@
 
 **The top-level `schema` field is mandatory and is checked, not ignored.** The analyzer refuses a version it does not recognise rather than reading a file whose fields have moved. A trace misread silently produces numbers that look plausible and are wrong, which is the failure mode this whole project keeps encountering.
 
-**Current version: 2.** Version 1 traces are session-1 exports: no `schema` field at all, no `blocks`, and no `b` stamp on samples or punches. They are still readable for framerate, reach distributions, and lead-versus-rear separation, but they cannot produce per-type recall because nothing declared what was being thrown. Treat an absent `schema` field as version 1.
+**Current version: 3.** Each older version is still readable, with a stated loss:
+
+| Version | What it adds | What it cannot support |
+|---|---|---|
+| 1 | Session-1 exports. No `schema` field, no `blocks`, no `b` stamp on samples or punches. | Per-type recall — nothing declared what was being thrown. |
+| 2 | Blocks, per-block model attribution, the version field itself. | Any hand claim, unless the operator is independently known to have been orthodox. |
+| 3 | `stance`; `lead` and `rear` become boxing roles rather than body sides. | — |
+
+Treat an absent `schema` field as version 1.
+
+**`lead` and `rear` name the boxing role from version 3 onward, and the body's left and right before it.** This is the one field pair whose meaning changed rather than being added, which is why it forced a version bump instead of riding along on version 2. Below version 3 the spike mapped its `lead` side onto the body's left unconditionally — correct for an orthodox operator, silently inverted for a southpaw, and indistinguishable between the two from inside the file. The analyzer raises this as a caveat on every trace below version 3 rather than reporting hand figures as though the question did not arise.
 
 **Every quantitative field is measured.** There are no estimated or derived-at-export values in a trace except the four explicitly aggregated ones (`meanFps`, `framesPerPunch`, and each block's `detected` counts), all of which are computed from real counters rather than reconstructed from wall-clock time. An earlier build reconstructed frames-per-punch from a fluctuating fps estimate and ran 28% low.
 
@@ -19,6 +29,7 @@
 | `schema` | Format version. Absent means version 1. |
 | `ua` | User agent string — identifies the device, which is part of any framerate claim. |
 | `cfg` | `{thresh, refract, minConf}` at export time. Note these are session-wide, not per-block: moving a slider mid-session is not recorded against the blocks it affected. |
+| `stance` | `orthodox` or `southpaw` at export time. Not necessarily the stance that produced most of the data — use the per-block field. Absent below version 3. |
 | `model` | The model selected at export time. Not necessarily the one that produced most of the data — use the per-block field. |
 | `modelsUsed` | Distinct models across all blocks. More than one entry means the trace spans a comparison. |
 | `depthActive` | Whether the model was actually emitting usable `keypoints3D` at export time. |
@@ -40,6 +51,7 @@ A block is a declaration made **before** the punches were thrown — what was ab
 | `label` | Punch type, or `freestyle` for unlabelled capture. |
 | `hand` | `lead`, `rear`, or `null` for freestyle — derived from the label, not observed. |
 | `context` | `shadow` or `bag`. |
+| `stance` | The stance this block's data was thrown under. Authoritative over the top-level `stance`. A block closes when stance changes, so no block spans two. |
 | `model` | The model that produced this block's data. Authoritative over the top-level `model`. |
 | `depthActive` | Whether depth was live when the block opened. |
 | `expected` | Declared rep count, or `null` for freestyle. The denominator of recall. |
@@ -51,7 +63,9 @@ A block is a declaration made **before** the punches were thrown — what was ab
 
 **`detected` can exceed `expected`.** That is a false-positive signal, not a data error, and the analyzer reports it as such rather than clamping.
 
-**`hand` is derived from the label, and `detectedOnDeclaredHand` compares it against which wrist moved.** The two disagreeing means either a misdetection or a stance assumption that does not hold — lead and rear are inferred from stance, and the spike's internal `lead`/`rear` are really left and right. For an orthodox operator filmed from the correct side these coincide; for a southpaw they invert. This is an open question in the spec and the trace does not resolve it.
+**`hand` is derived from the label, and `detectedOnDeclaredHand` compares it against which wrist moved.** From version 3 the two are expressed in the same terms — the block's declared stance has already been applied to the wrist that moved — so a disagreement is a misdetection rather than an artefact of the convention. Below version 3 it could be either, and there is no way to tell from the file.
+
+What this does *not* settle is whether stance should be declared once or detected continuously. The spike declares it, per block; that is an instrument decision, and the product question is still open in the spec.
 
 ### Samples and punches
 
@@ -64,6 +78,8 @@ A missing side object for a frame means that side's keypoints fell below the con
 Punch records carry `hand`, `t`, `ms`, `frames`, `peak`, `elbow`, and `b`.
 
 ## History
+
+**Schema 3 added stance, and redefined `lead`/`rear` as boxing roles (2026-07-28).** The spike had named its two sides `lead` and `rear` while keying them to the body's left and right, which holds only for an orthodox operator. A southpaw's `detectedOnDeclaredHand` — the figure acceptance criterion 13 is written in terms of, and the one the model decision turns on — would have inverted, reporting near-zero hand agreement on every block while the detection itself was working correctly. The failure would have been invisible in the export and plausible in the analysis, since a rear hand reading close to zero is exactly what session 1 measured for real geometric reasons.
 
 **Schema 2 added blocks, per-block model stamping, and the version field (2026-07-28).** Before it, switching models mid-recording left `recording` set and the detector replaced, so a second model's frames appended into the same arrays with nothing marking the seam. The export claimed a single `model` for a file containing two. That defect is fixed at the source — a model switch now closes the open block — but the version field exists so an analyzer can never make that mistake about an older file either.
 

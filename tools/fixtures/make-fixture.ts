@@ -18,6 +18,7 @@ export function makeBlock(over: Partial<Block> = {}): Block {
     label: 'jab',
     hand: 'lead',
     context: 'shadow',
+    stance: 'orthodox',
     model: 'movenet-lightning',
     depthActive: false,
     expected: 10,
@@ -79,11 +80,12 @@ export function makeSample(over: {
 export function makeTrace(over: Partial<Trace> = {}): Trace {
   const blocks = over.blocks ?? [makeBlock({ id: 1 })];
   return {
-    schema: 2,
+    schema: 3,
     ua: 'fixture/1.0',
     cfg: { thresh: 1.25, refract: 140, minConf: 0.3 },
     model: blocks[0]?.model ?? 'movenet-lightning',
     modelsUsed: [...new Set(blocks.map((b) => b.model))],
+    stance: blocks[0]?.stance ?? 'orthodox',
     depthActive: false,
     meanFps: 57.9,
     inferenceFrames: 600,

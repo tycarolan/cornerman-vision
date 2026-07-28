@@ -10,9 +10,11 @@ Visual design: `docs/mockups.html` (six screens, annotated).
 
 Cornerman already calls combos at you. The obvious missing half is whether you actually threw them. That question — *did I do what it told me?* — is what this exists to answer.
 
-The scope is set by one hard constraint discovered up front: **browser pose estimation on a phone runs at roughly 30 frames per second, and a fast jab lasts 100–150 milliseconds.** That is four or five frames per punch. Everything in this spec is shaped by living inside that budget rather than pretending it isn't there.
+The scope was originally set by an assumed hard constraint: that browser pose estimation on a phone runs at roughly 30 frames per second against a 100–150ms jab, giving four or five frames per punch. **Phase 0 measured 57.9fps on the target device** — the assumption was pessimistic by roughly 2×, and every frame-budget figure derived from it was correspondingly wrong. Measured frames per punch is 5.7 mean, 6.1 median, on punches averaging 98ms.
 
-That constraint pushes the product toward the signals that survive coarse sampling — punch count, work rate, and guard position — and away from the ones that don't, like technique grading. It also inverts the obvious model choice: the more accurate pose model is too slow in a browser to see hands at all, so the lighter, coarser model is the correct pick.
+The framerate budget is therefore no longer the binding constraint. **The binding constraint is projection: a single 2D camera cannot see motion travelling along its own depth axis.** That is what actually shapes this spec, and it is a harder problem than framerate because no amount of device performance fixes it.
+
+That constraint still pushes the product toward the signals that survive — punch count, work rate, and guard position — and away from technique grading. It no longer settles the model choice: the argument for the lighter model rested on the 30fps figure, and with that figure corrected the trade is open again. See Pose inference.
 
 The feature that justifies the product is **guard tracking**, and it is deliberately the easiest thing in the system to detect rather than the flashiest. The non-punching hand is slow and nearly static, which is exactly what pose models are reliable at — the opposite of the fast-hand problem that makes punch classification hard. It is also genuinely useful coaching that no timer app provides.
 
@@ -36,7 +38,11 @@ Four checks run continuously against the live preview, each passing or failing i
 
 The start control is disabled until all four pass. This is intentionally a little obstructive.
 
-**Why the oblique angle matters:** punching directly toward the camera is the intuitive setup and the worst possible one — a straight punch travels almost entirely along the camera's depth axis, which a 2D-dominant model barely registers as movement. Side-on captures straights cleanly but flattens hooks into ambiguity. An oblique setup around 45° is the only arrangement where straights and hooks both project a visible component. Body-local normalization (below) makes this a strong preference rather than a hard requirement.
+**Why the oblique angle matters:** punching directly toward the camera is the intuitive setup and the worst possible one — a straight punch travels almost entirely along the camera's depth axis, which a 2D-dominant model barely registers as movement. Side-on captures straights cleanly but flattens hooks into ambiguity. An oblique setup around 45° projects a visible component of both.
+
+**Phase 0 qualified this, and the qualification is severe.** At roughly 45° the *rear* hand is the one aligned with the depth axis. Measured over a 20-second round: the rear hand was tracked in 91% of frames — present, confident, not occluded — yet its 99th-percentile normalized reach was 0.86 against the lead hand's 1.61, and it crossed the detection threshold in 6 frames against the lead hand's 101. **Zero rear-hand punches were detected while crosses were being thrown.** Lowering the threshold does not recover them: at 0.9 the lead hand still has 183 qualifying frames to the rear hand's 8. The signal is not weak, it is absent — it was never projected into the image.
+
+So an oblique angle does not make both hands visible. It trades which hand is legible. This is not solvable by threshold tuning or by a better 2D model; it requires either depth (see Pose inference) or an accepted asymmetry in what the system can report.
 
 ### The round
 
@@ -72,15 +78,23 @@ Inference runs off the main thread in a worker against an offscreen surface, so 
 
 ### Pose inference
 
-**MoveNet Lightning** is the chosen model, via the maintained TensorFlow.js pose-detection package. Seventeen keypoints, and the only browser-viable option at the framerate punches require.
+**This decision is reopened pending measurement, and Phase 1 must not begin until it is settled.**
 
-This is a deliberate inversion of the intuitive choice. The higher-fidelity alternative (BlazePose, 33 landmarks with depth estimates) is substantially more accurate per frame but runs at roughly a third the rate in a browser on mobile — fast enough for yoga or squat counting, far too slow to resolve a punch. Accuracy per frame is worthless if the punch happens between frames.
+**MoveNet Lightning** was chosen on the basis that BlazePose runs at roughly a third the rate in a mobile browser — fast enough for yoga, too slow to resolve a punch. That reasoning rested on an assumed 30fps ceiling for MoveNet. Phase 0 measured **57.9fps**, so the estimate that ruled BlazePose out came from the same generation of assumptions as a figure now known to be wrong by 2×. If the error is systematic, BlazePose plausibly lands near 25fps on this hardware — about 3 frames per punch, temporally worse, but carrying **33 landmarks with a depth coordinate**.
+
+Depth is not a refinement here. It is the only known answer to the rear-hand problem above, and to the elbow-angle failure in Punch classification. A synthetic check confirmed the mechanism exactly: for an arm extended straight along the camera axis, the 2D metric reports reach 0.0 and an elbow angle of 90°, while the 3D metric on the same landmarks reports reach 1.5 and 180°. When motion lies in the image plane the two agree precisely; when it lies along the depth axis, 2D reports nothing.
+
+The trade is therefore **temporal resolution against dimensional completeness**, and it cannot be settled from the armchair. The Phase 0 spike carries a model selector (MoveNet Lightning/Thunder, BlazePose Lite/Full) reporting sustained fps and per-hand reach in both 2D and 3D on the same punches. The gym session measures it. Whichever model is chosen, the spike's own numbers become the thresholds, replacing every estimate in this document.
 
 ### Normalization
 
 Raw keypoints arrive in pixel coordinates, which vary with distance from the camera and with where the operator happens to be standing. Two transforms make everything downstream stable:
 
 **Scale normalization** against torso length or shoulder width, so an identical punch produces identical numbers at six feet and at ten.
+
+**Phase 0 found the scale reference is itself angle-dependent, and this is a defect in the approach rather than in the tuning.** Using the 2D distance between shoulders as the denominator fails at exactly the oblique angles this spec recommends: shoulder width foreshortens, the denominator shrinks, and every reach value inflates. The measured evidence is that peak reach reached **1.84 shoulder-widths — a geometric impossibility**, since wrist-to-shoulder distance cannot exceed upper arm plus forearm, roughly 1.6. The excess is pure projection error.
+
+The consequence is that thresholds tuned at one camera placement do not transfer to another, which directly contradicts acceptance criterion 4. Two candidate fixes: normalize against a 3D shoulder width, which does not foreshorten, or against a projection-stable reference such as torso length combined with an estimate of body orientation. The first is free if a depth-capable model is chosen and is the reason the model decision above gates this one.
 
 **Rotation into a body-local coordinate frame**, with the shoulder line as the lateral axis, the spine as the vertical, and the derived normal as forward. After this transform, "the punch travelled forward" is a statement about the body rather than about camera placement.
 
@@ -112,6 +126,15 @@ Three-way separation rests on two interpretable features:
 
 Elbow angle cleanly separates straights from everything else — a strong, near-binary signal. Dominant displacement axis then separates hook from uppercut. **This ships first as a hand-tuned decision tree over interpretable features, before any model is trained.**
 
+**Phase 0 falsified the elbow-angle premise as measured in 2D.** Across ten detected punches, every single one peaked at an elbow angle between 74° and 95° — read as bent, when straights were among what was thrown. The table above would have classified all of them as hooks. Meanwhile 111 frames *did* read above 140°, and none fell within 0.35s of a detected punch: those are the arm hanging relaxed at the side, nearly collinear. The feature carries signal, but not the signal the table assumes.
+
+Two independent causes, both projection:
+
+- **Foreshortening.** An arm extended toward the camera projects as a bent arm. The synthetic check in Pose inference reproduces exactly the observed ~90° reading for a fully extended limb.
+- **Keypoint drift under speed.** Treating the arm as a rigid two-link chain, the implied segment length is not self-consistent between punch and idle frames — the elbow, the fastest-moving and most frequently occluded of the three joints, is mislocated during extension. Wrist and shoulder are reliable; the elbow is not.
+
+Elbow angle at peak should therefore be treated as **unusable in 2D**. It may be recoverable in 3D, where the synthetic check returned a correct 180° for the same extended arm, but that is unverified against a real body and is a Phase 3 gate rather than an assumption. If depth does not rescue it, phases 3 and 4 narrow to hand identification plus displacement axis, and six-way classification is dropped rather than shipped wrong.
+
 Classification operates over the **full punch cycle including retraction**, not the outbound half alone. The return is slower and more distinctive, and extension-plus-retraction spans roughly three times as many frames — a free tripling of sample count at no cost.
 
 Known weaknesses, stated plainly: hook versus uppercut is the confusion pair, since both keep the elbow bent and a tight upward hook genuinely is an intermediate case. Maximum-speed punches may not have a frame at peak extension, causing a straight to read as a hook. Overhands and looping shots sit between classes by definition. Realistic expectation is **near-perfect hand identification, high straight-versus-other accuracy, and 80–90% full six-way accuracy at training speed, degrading as speed increases.**
@@ -123,6 +146,10 @@ There is no adequate public labelled boxing dataset, and building a general one 
 **The app collects its own data.** A calibration mode prompts for roughly ten repetitions of each punch in turn. Ninety seconds produces sixty labelled examples from the operator's own body, camera angle, lighting, and stance.
 
 A personalized model trained on those samples will outperform a general model trained on thousands of strangers, because it never has to generalize across body types or camera placements. This is the single largest accuracy lever in the system and it costs a minute and a half of the operator's time.
+
+**Phase 0 promoted calibration from onboarding to a per-setup step.** Two findings force this. Thresholds are camera-angle dependent, because the scale reference foreshortens (see Normalization). And they are context dependent: on a heavy bag the punch terminates at impact rather than at full extension, so peak reach lands materially below the 1.27–1.84 measured while shadowboxing, and by an amount that varies with how far the operator stands from the bag. A single calibration cannot serve both.
+
+Calibration is therefore re-run whenever the phone is repositioned, and **separate profiles are kept for bag work and shadowboxing**. This is a better design than the original: it converts two unresolved open questions into one mechanism the system already needs. If a depth-capable model is chosen, 3D thresholds should transfer across camera angles far better than 2D ones and may reduce recalibration to context changes alone — worth measuring, not worth assuming.
 
 The model consumes **normalized keypoint windows, never pixels** — dramatically cheaper and better-generalizing. A small temporal classifier over roughly half a second of frames is sufficient; this is a sub-100KB artifact, not a deep network.
 
@@ -170,7 +197,19 @@ Unit-testable logic (normalization, peak detection, classification, rollups) is 
 
 ## Phasing
 
-**Phase 0 — the spike. Everything else is gated on this.** A throwaway page running MoveNet against the live camera, plotting normalized wrist-to-shoulder distance, elbow angle, and wrist velocity, and logging the traces. The question it answers: *are the peaks clean and separable at the operator's actual punching speed, in the operator's actual lighting?* One evening. If the signal is mush, phases 1–4 do not proceed as specified and the product narrows to work rate and guard only.
+**Phase 0 — the spike. RUN, and partially conclusive.** A page running the pose model against the live camera, plotting normalized wrist-to-shoulder distance and elbow angle and logging the traces. It answered its question and surfaced two problems the spec had not anticipated.
+
+What it settled:
+
+- **Framerate is not the constraint.** 57.9fps sustained on the target phone; 5.7 mean frames per punch on 98ms punches. Comfortably above the 4-frame floor at which classification was to be abandoned.
+- **Lead-hand detection works, with no false positives.** Over 284 frames of ordinary movement, idle reach held a median of 0.32 against punch peaks of 1.27–1.84 — a 4× separation, with nothing in a full round of guard movement crossing the threshold. Guard jitter reaching punch height was the failure mode expected to kill the product. It did not occur.
+- **Tracking quality is adequate** with correct framing: 3.1% two-arm dropout and 0.67 median confidence, against 19% and 0.51 from a badly framed desk-webcam run. Framing discipline is worth more than it looks.
+
+What it broke: **rear-hand punches are undetectable in 2D** (see Setup and framing), **the scale reference foreshortens** (see Normalization), and **elbow angle at peak is unusable in 2D** (see Punch classification).
+
+Phase 0 is therefore not closed. A second session measures the model trade in a gym, in labelled blocks — ten of each punch type in turn, shadowboxing and on the bag — producing per-punch-type recall rather than the inferred figure available now. **Phase 1 does not begin until the model decision is settled**, since normalization, thresholds, and the classification tier all depend on it.
+
+The original narrowing rule still stands and is now closer to live: if depth does not recover the rear hand, the product narrows to work rate and guard tracking, and phases 3–4 are dropped rather than shipped inaccurate.
 
 **Phase 1 — detection and count.** Framing checks, capture pipeline, normalization, peak detection. Delivers punch count, punches per minute, work rate, the live screen, and round summaries. No classification.
 
@@ -194,16 +233,21 @@ Phases 1 and 2 constitute a complete, useful product on their own. Phases 3 and 
 8. No video data is written to storage or emitted over the network — confirmed by inspecting both.
 9. A full six-round session completes without thermal throttling degrading the framerate below the detection floor.
 10. Hand identification (lead versus rear) is at least 98% accurate against a labelled review.
+    - *Status: currently unmet and the largest open risk. Phase 0 detected zero rear-hand punches while crosses were being thrown, so rear-hand recall is 0%, not 98%. Criteria 3 and 4 are likewise known to fail under 2D normalization — see Normalization. All three are gated on the model decision.*
 11. Six-way classification accuracy is measured and **reported in the UI as a confidence level**; the system never presents a low-confidence classification as certain.
 12. All pipeline logic is unit-tested against recorded keypoint fixtures, independent of a live camera.
+13. **Rear-hand recall is within 10 percentage points of lead-hand recall**, measured in labelled per-punch-type blocks. This is the criterion that decides whether six-punch reporting ships at all; without it the product is honest only about the lead hand.
+14. Detection thresholds established by calibration at one camera placement remain valid after the phone is repositioned and recalibrated, and separate bag and shadowboxing profiles are retained without cross-contamination.
 
 ## Open questions
 
 - [ ] **The name.** *Cornerman Vision* is a working title. A rename of Cornerman itself was discussed and deliberately parked — the existing name is liked, the live domain and certificate would need reissuing, and another workstream is currently active in that repository. Revisit once that lands.
-- [ ] **Separate application or a Cornerman mode?** Built standalone first, deliberately: if detection quality proves inadequate, that finding should not have contaminated a working timer. Merging afterward is straightforward and there is a real argument for it — the timer already knows work from rest, which is what makes inference gating free. Decide after Phase 2.
+- [ ] **Model choice: MoveNet or BlazePose?** The blocking decision, and the only one Phase 1 waits on. Temporal resolution against dimensional completeness — see Pose inference. Settled by measurement in the next spike session, not by argument.
+
+- [ ] **Separate application or a Cornerman mode?** Built standalone first, deliberately: if detection quality proves inadequate, that finding should not have contaminated a working timer. The original plan was to revisit after Phase 2; the evidence now points strongly at *never merging*. Camera permission, a model download, a multi-second warmup, and a blocking framing step are precisely the weight that would destroy what makes the timer good, and keeping that surface simple has since been stated as a product principle rather than a preference. If the two ever connect it should be Vision reading Cornerman's round structure, not Cornerman growing a camera. Recommend closing as "stays separate"; left open pending an explicit call.
 - [ ] **Guard threshold definition.** "Hand down" needs a precise, scale-normalized definition — presumably a wrist position relative to chin height and centreline — plus a dwell time so that the natural drop during a punch is not counted. Requires tuning against real footage.
 - [ ] **Southpaw and stance switching.** Lead/rear is currently inferred from stance. Whether stance is configured once or detected continuously is unresolved; switching mid-round would break the odd/even mapping.
-- [ ] **Bag work versus shadowboxing.** Heavy bag work introduces an occluding object and a very different retraction profile. Whether the same thresholds serve both is unknown and should be tested in Phase 1.
+- [x] **Bag work versus shadowboxing.** Resolved in principle by making calibration a per-setup step with separate profiles per context (see Calibration). The punch terminates at impact rather than full extension, so bag peaks sit below the measured shadowboxing range by an amount that varies with distance from the bag — one threshold set cannot serve both, and calibration is the mechanism that already exists to handle it. Two mechanical cautions remain for Phase 1: the camera must never sit across the bag from the operator, since the bag would occlude the hands at the moment of impact, and bag occlusion of the torso breaks the shoulder-width scale reference and corrupts every reach value at once. The gap between the two profiles is measured, not assumed.
 - [ ] **Confidence presentation.** How to show an uncertain classification without either overclaiming or making the display noisy. Affects criterion 11.
 
 ## Related

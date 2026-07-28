@@ -19,6 +19,7 @@ The session has one job: **settle MoveNet versus BlazePose.** Everything below i
 - **The phone does not move within a model's run.** Thresholds are camera-placement dependent — the scale reference foreshortens, so a reposition invalidates comparison between blocks either side of it. If it is knocked, end the block, note it, and restart the model's run.
 - **Rep counts are exact.** A block declaring ten and delivering nine reports 90% recall on a model that detected everything. If you lose count, end the block and redo it. Count out loud.
 - **One punch type per block.** A mixed block cannot produce per-type recall, which is the entire output of the session.
+- **Stance is set before the first block.** Lead and rear are boxing roles; the pose model reports the body's left and right, and the two coincide only for an orthodox operator. A southpaw left on the default inverts `detectedOnDeclaredHand` on every block — the exact figure the model decision turns on — and the trace looks entirely normal afterwards. Changing stance mid-block closes the block deliberately, and the closed block keeps the stance it was actually thrown under.
 
 ### Throwing discipline
 
@@ -32,6 +33,14 @@ The session has one job: **settle MoveNet versus BlazePose.** Everything below i
 Oblique to the stance, around 45°, full body in frame. **Never across the bag from the operator** — the bag occludes the hands at exactly the moment of impact, and it occludes the torso, which breaks the shoulder-width scale reference and corrupts every reach value at once rather than obviously failing.
 
 Note that at 45° the *rear* hand is the one aligned with the depth axis. This is the thing being measured, not a setup error to be corrected.
+
+## Tracking where you are
+
+The spike's **Session progress** panel is the checklist for everything below, and it is built from this document rather than from the full model × punch × context cross-product. It counts only what the stages here actually ask for: a model dropped by Stage A takes its six Stage B cells with it, and Stage C asks for three punch types on two models rather than six on four. The total therefore falls as the session proceeds, which is the intended behaviour and not a bug.
+
+It derives entirely from recorded blocks, so it cannot be edited, and it resets when the page reloads — like the session itself.
+
+The one judgement it makes for you is the Stage A drop: a model's measured frames per punch, taken from its freestyle block, against the floor below. Everything else it reports rather than decides.
 
 ## Patterns
 
@@ -87,5 +96,7 @@ Switching models mid-block closes the block automatically and says so in the log
 **Blocks were added after session 1 (2026-07-28).** Session 1 shipped with a single Record toggle and no labelling. Its export could support "punches were detected" and "the rear hand appears absent" but not "rear-hand recall is N%", which is what acceptance criterion 13 is written in terms of and what the model decision requires. The block mechanism exists solely to make that number measurable rather than inferred.
 
 **The thermal control exists because model order confounds it.** Testing four models in sequence on one phone means the last model is measured on the hottest device. Session 1 measured 57.9fps sustained but over a single 20-second window, so this effect has never actually been observed here — which is the reason to control for it rather than the reason to assume it is absent.
+
+**Stance was added because it inverts the decision figure invisibly (2026-07-28).** The spike originally keyed its lead and rear sides to the body's left and right, which is right for an orthodox operator and backwards for a southpaw. A southpaw session would have reported near-zero hand agreement on every block while detection worked perfectly — and near-zero rear-hand agreement is exactly what session 1 measured for real geometric reasons, so the artefact would have read as a confirmation.
 
 **Rep-count exactness is called out because it silently inverts the result.** A miscounted block attributes the operator's error to the model, and recall is the number the decision turns on. There is no way to detect this afterwards in the trace.

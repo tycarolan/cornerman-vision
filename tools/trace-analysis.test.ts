@@ -256,4 +256,31 @@ describe('analyze', () => {
     const trace = makeTrace({ blocks: [makeBlock({ label: 'freestyle', hand: null, expected: null })] });
     expect(analyze(trace).caveats.join(' ')).toContain('no ground truth');
   });
+
+  it('reports the declared stance', () => {
+    expect(analyze(makeTrace()).stances).toEqual(['orthodox']);
+  });
+
+  it('warns that a pre-stance trace reads lead and rear as left and right', () => {
+    // Schema 2 mapped lead onto the body's left unconditionally, so every hand
+    // figure in such a trace is correct only if the operator happened to be
+    // orthodox — and nothing in the file says whether they were.
+    const trace = makeTrace({ schema: 2, blocks: [makeBlock({ stance: undefined })] });
+    const a = analyze(trace);
+    expect(a.stances).toEqual([]);
+    expect(a.caveats.join(' ')).toContain('inverted if they were southpaw');
+  });
+
+  it('warns when a trace pools blocks thrown from different stances', () => {
+    const trace = makeTrace({
+      blocks: [makeBlock({ id: 1, stance: 'orthodox' }), makeBlock({ id: 2, stance: 'southpaw' })],
+    });
+    const a = analyze(trace);
+    expect(a.stances).toEqual(['orthodox', 'southpaw']);
+    expect(a.caveats.join(' ')).toContain('spans 2 stances');
+  });
+
+  it('does not raise the stance caveat on a schema 3 trace', () => {
+    expect(analyze(makeTrace()).caveats.join(' ')).not.toContain('southpaw');
+  });
 });

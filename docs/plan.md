@@ -10,7 +10,7 @@ Each phase carries a **Gate** — the literal command or observation that closes
 |---|---|---|
 | 0 — The spike | Run, reopened | Session 1 answered framerate, broke three assumptions. Session 2 pending. |
 | 0.5 — Repo foundation | **Done** | Documentation architecture, slash commands, app scaffold. Gates pass. |
-| 0.6 — Measurement instrument | **Done** | Labelled capture and offline analyzer landed. Awaiting the session. |
+| 0.6 — Measurement instrument | **Done** | Labelled capture and offline analyzer landed. Session-progress checklist and stance declaration added since. Awaiting the session. |
 | 1 — Detection and count | **Blocked** | Gated on the model decision, which session 2 settles. |
 | 2 — Guard tracking | Blocked | Follows Phase 1. |
 | 3 — Classification | Blocked | May be dropped entirely — see spec, Punch classification. |
@@ -97,6 +97,13 @@ This phase has a hard external deadline: it must land before the session, or the
 - [ ] Reject traces whose schema version it does not know, rather than silently misreading them
 
 **Gate:** `npm test` passes over recorded fixtures, and the analyzer run against a session-1 export reproduces the figures already quoted in the spec.
+
+### Added after the gate closed
+
+Both of these are session-readiness work rather than new capability, and neither changes what the session measures — only whether it can be run and read correctly.
+
+- **Session progress.** A checklist over the protocol's five stages, derived from recorded blocks. It exists because the gym failure mode is losing track of which cells are done between blocks, and it mirrors the protocol's pruning rather than the 4 × 6 × 2 cross-product — a model dropped by the Stage A triage takes its six Stage B cells with it, so the total falls as the session proceeds.
+- **Stance.** The spike named its sides lead and rear while keying them to the body's left and right. For a southpaw that inverted `detectedOnDeclaredHand` on every block, which is the figure acceptance criterion 13 is written in terms of. Stance is now declared, applied, and carried on each block; the export moves to schema 3. The spec's open question is narrowed by this, not closed — see `docs/spec.md`.
 
 ## Phase 0 — session 2, the model decision
 

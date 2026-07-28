@@ -149,6 +149,14 @@ Scope will be rewritten against the chosen model before it starts; normalization
 | Thermal throttling during a long session | Late-round data quality silently degrades | The spike already reports sustained fps; watch it across the session rather than trusting a spot reading |
 | Foundation work crowds out the deadline | Session 2 runs on the old instrument | 0.6 takes priority over 0.5 whenever they compete |
 
+## Deployment
+
+The spike deploys from this repository's `spike/` directory to its own Vercel project, connected to GitHub with `main` as the production branch. **A merge to main deploys the spike; a pull request gets a preview URL.** The preview is the useful half — it means a change can be tested on a phone in a gym before it lands.
+
+The application at the repository root is a separate concern and does not yet have a deployment, because it does not yet have anything to deploy. It gets its own project when Phase 1 produces surface worth visiting.
+
+Vision and Cornerman stay separate applications with separate deployments, each carrying its own card on the taiotech hub — see the resolved open question in `docs/spec.md`.
+
 ## Related
 
 - `docs/spec.md` — what is being built and why

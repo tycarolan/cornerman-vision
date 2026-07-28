@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The spike's Vercel project is connected to GitHub with `main` as the production branch and `spike/` as the root directory, so merges deploy and pull requests get preview URLs.
+- Commits in this repository are authored from the address registered on the GitHub account. Vercel will not build a Git-triggered deployment whose author it cannot resolve to an authorized user.
 - Resolved the open question on integration with Cornerman: the two stay separate applications, each with its own card on the taiotech hub.
 
 ### Fixed

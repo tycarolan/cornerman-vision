@@ -153,11 +153,13 @@ Scope will be rewritten against the chosen model before it starts; normalization
 
 The spike deploys from this repository's `spike/` directory to its own Vercel project, connected to GitHub with `main` as the production branch. **A merge to main deploys the spike; a pull request gets a preview URL.** The preview is the useful half — it means a change can be tested on a phone in a gym before it lands.
 
-**Known issue, 2026-07-28: webhook-triggered deployments come back BLOCKED.** The connection itself is correct — the webhook fires and creates a deployment — but it is refused before the build starts, with no build events and no error code exposed over the API. A deployment of the identical commit triggered through an authenticated API call builds normally, which places the fault in authorization rather than in the repository, the root directory, or the build.
+**Commits must be authored from the GitHub-registered address.** This repository sets `user.email` locally to the address associated with the GitHub account, overriding a global default that belongs to a different forge.
 
-The probable cause is that the commit author email is not registered on the GitHub account, so `githubCommitAuthorLogin` resolves to null and Vercel declines to run a build it cannot attribute to an authorized user. The fix is to add that address as a verified email on the GitHub account, or to author commits from an address already registered there.
+This is not cosmetic. Vercel refuses to build a Git-triggered deployment it cannot attribute to an authorized user, and GitHub only resolves a commit to an account when the author email is registered there. Committing from an unregistered address produced a deployment in state BLOCKED — no build events, no error code exposed over the API, and nothing on the deployment itself indicating authorship as the cause. A deployment of the identical commit triggered through an authenticated API call built normally, which is what isolated it.
 
-Until that is confirmed, `npm run deploy:spike` pushes the spike to production directly and does not depend on the webhook. Do not assume a merge has deployed — check.
+Measured 2026-07-28: with the unregistered address, `githubCommitAuthorLogin` resolved to null and the deployment was BLOCKED. With the registered address, it resolved to the account and the deployment reached READY.
+
+`npm run deploy:spike` pushes the spike to production directly and does not depend on the webhook. It is the fallback if this recurs.
 
 The application at the repository root is a separate concern and does not yet have a deployment, because it does not yet have anything to deploy. It gets its own project when Phase 1 produces surface worth visiting.
 

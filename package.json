@@ -11,7 +11,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "analyze": "tsx tools/analyze-trace.ts"
+    "analyze": "tsx tools/analyze-trace.ts",
+    "deploy:spike": "vercel deploy --prod --yes --cwd spike"
   },
   "dependencies": {
     "next": "16.2.12",

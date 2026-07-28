@@ -153,6 +153,12 @@ Scope will be rewritten against the chosen model before it starts; normalization
 
 The spike deploys from this repository's `spike/` directory to its own Vercel project, connected to GitHub with `main` as the production branch. **A merge to main deploys the spike; a pull request gets a preview URL.** The preview is the useful half — it means a change can be tested on a phone in a gym before it lands.
 
+**Known issue, 2026-07-28: webhook-triggered deployments come back BLOCKED.** The connection itself is correct — the webhook fires and creates a deployment — but it is refused before the build starts, with no build events and no error code exposed over the API. A deployment of the identical commit triggered through an authenticated API call builds normally, which places the fault in authorization rather than in the repository, the root directory, or the build.
+
+The probable cause is that the commit author email is not registered on the GitHub account, so `githubCommitAuthorLogin` resolves to null and Vercel declines to run a build it cannot attribute to an authorized user. The fix is to add that address as a verified email on the GitHub account, or to author commits from an address already registered there.
+
+Until that is confirmed, `npm run deploy:spike` pushes the spike to production directly and does not depend on the webhook. Do not assume a merge has deployed — check.
+
 The application at the repository root is a separate concern and does not yet have a deployment, because it does not yet have anything to deploy. It gets its own project when Phase 1 produces surface worth visiting.
 
 Vision and Cornerman stay separate applications with separate deployments, each carrying its own card on the taiotech hub — see the resolved open question in `docs/spec.md`.

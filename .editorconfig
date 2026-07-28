@@ -1,0 +1,18 @@
+# https://editorconfig.org
+root = true
+
+# Defaults for every file.
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# 2-space indent across the stack.
+[*.{ts,tsx,js,jsx,json,css,md,yml,yaml,html}]
+indent_style = space
+indent_size = 2
+
+# Markdown uses two trailing spaces as a hard line break — do not strip them.
+[*.md]
+trim_trailing_whitespace = false

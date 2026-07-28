@@ -8,7 +8,20 @@
  */
 
 /** Highest export schema this module knows how to read. */
-export const SUPPORTED_SCHEMA = 2;
+export const SUPPORTED_SCHEMA = 3;
+
+/**
+ * Schema at which the per-side `lead`/`rear` keys started meaning the boxing
+ * role rather than the anatomical side.
+ *
+ * Before it, the spike mapped its `lead` side onto the body's left unconditionally,
+ * so the keys read correctly only for an orthodox operator and silently inverted
+ * for a southpaw. Traces at or above this version declare `stance` and have
+ * already applied it.
+ */
+export const STANCE_AWARE_SCHEMA = 3;
+
+export type Stance = 'orthodox' | 'southpaw';
 
 export interface SideSample {
   /** Depth-aware where the model supplies it; identical to `reach2d` otherwise. */
@@ -47,6 +60,8 @@ export interface Block {
   label: string;
   hand: 'lead' | 'rear' | null;
   context: 'shadow' | 'bag';
+  /** Declared stance. Absent below schema 3, where lead/rear meant left/right. */
+  stance?: Stance;
   model: string;
   depthActive: boolean;
   /** Declared rep count. Null for freestyle blocks, which have no ground truth. */
@@ -66,6 +81,8 @@ export interface Trace {
   cfg: { thresh: number; refract: number; minConf: number };
   model: string;
   modelsUsed?: string[];
+  /** Stance at export time. The per-block field is authoritative. */
+  stance?: Stance;
   depthActive: boolean;
   meanFps: number | null;
   inferenceFrames: number;
@@ -436,6 +453,11 @@ export interface Analysis {
   device: string;
   config: Trace['cfg'];
   modelsUsed: string[];
+  /**
+   * Distinct stances across the trace's blocks. Empty on a trace that predates
+   * the field, where the stance was never declared and cannot be recovered.
+   */
+  stances: Stance[];
   /** Warnings about what this trace cannot support, rather than silent omission. */
   caveats: string[];
   blocks: BlockResult[];
@@ -461,6 +483,20 @@ export function analyze(raw: unknown): Analysis {
   if (schema >= 2 && labelled.length === 0) {
     caveats.push('No labelled blocks in this trace — every block was freestyle, so there is no ground truth to compute recall against.');
   }
+  if (schema < STANCE_AWARE_SCHEMA) {
+    caveats.push(
+      `Schema ${schema} trace: the lead and rear keys are the body's left and right, not boxing ` +
+        'roles, because stance was not declared. Every hand figure below is correct only if the ' +
+        'operator was orthodox, and inverted if they were southpaw. Nothing in the file resolves which.',
+    );
+  }
+  const stances = [...new Set(blocks.map((b) => b.stance).filter((s): s is Stance => !!s))];
+  if (stances.length > 1) {
+    caveats.push(
+      `Trace spans ${stances.length} stances (${stances.join(', ')}). Blocks are stance-stamped ` +
+        'individually, so per-block figures hold, but pooling hand figures across them does not.',
+    );
+  }
   if (blocks.some((b) => b.open)) {
     caveats.push('One block was still open at export. Its counts are real but its span is truncated.');
   }
@@ -477,6 +513,7 @@ export function analyze(raw: unknown): Analysis {
     device: trace.ua,
     config: trace.cfg,
     modelsUsed: models,
+    stances,
     caveats,
     blocks: analyzeBlocks(trace),
     recall: recallByPunchType(trace),

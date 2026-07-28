@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Labelled block capture in the spike — punch type, context, and declared rep count, so per-punch-type recall is measurable rather than inferred.
 - Export schema 2, carrying blocks and per-block model attribution.
 - The offline trace analyzer in `tools/`, with `npm run analyze`.
+- A session-progress checklist in the spike, tracking the capture protocol's five stages. It counts only the cells the protocol asks for — a model dropped by the framerate triage takes its six shadowbox cells with it — so the total falls as the session proceeds.
+- A stance declaration in the spike, carried on every block and on the export.
+- Export schema 3, adding `stance`.
 - The Next.js app shell, on the shared TaioTech token set.
 
 ### Changed
@@ -28,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The spike named its two sides lead and rear while keying them to the body's left and right, so `detectedOnDeclaredHand` inverted for a southpaw — reporting near-zero hand agreement on every block while detection was working. Stance is now declared and applied, and `lead`/`rear` mean the boxing roles throughout.
 - Switching models mid-recording left the recording flag set and appended a second model's frames into the same trace with nothing marking the seam. The switch now closes the open block.
 - Flipping the camera left per-side punch state and the framerate window stale, which could fire a spurious detection across the gap.
 - Frame numbers reset on every Start, so blocks recorded before a model switch pointed at frame ranges that later blocks also claimed. They are now monotonic for the life of the page.

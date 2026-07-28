@@ -149,6 +149,22 @@ Scope will be rewritten against the chosen model before it starts; normalization
 | Thermal throttling during a long session | Late-round data quality silently degrades | The spike already reports sustained fps; watch it across the session rather than trusting a spot reading |
 | Foundation work crowds out the deadline | Session 2 runs on the old instrument | 0.6 takes priority over 0.5 whenever they compete |
 
+## Deployment
+
+The spike deploys from this repository's `spike/` directory to its own Vercel project, connected to GitHub with `main` as the production branch. **A merge to main deploys the spike; a pull request gets a preview URL.** The preview is the useful half — it means a change can be tested on a phone in a gym before it lands.
+
+**Commits must be authored from the GitHub-registered address.** This repository sets `user.email` locally to the address associated with the GitHub account, overriding a global default that belongs to a different forge.
+
+This is not cosmetic. Vercel refuses to build a Git-triggered deployment it cannot attribute to an authorized user, and GitHub only resolves a commit to an account when the author email is registered there. Committing from an unregistered address produced a deployment in state BLOCKED — no build events, no error code exposed over the API, and nothing on the deployment itself indicating authorship as the cause. A deployment of the identical commit triggered through an authenticated API call built normally, which is what isolated it.
+
+Measured 2026-07-28: with the unregistered address, `githubCommitAuthorLogin` resolved to null and the deployment was BLOCKED. With the registered address, it resolved to the account and the deployment reached READY.
+
+`npm run deploy:spike` pushes the spike to production directly and does not depend on the webhook. It is the fallback if this recurs.
+
+The application at the repository root is a separate concern and does not yet have a deployment, because it does not yet have anything to deploy. It gets its own project when Phase 1 produces surface worth visiting.
+
+Vision and Cornerman stay separate applications with separate deployments, each carrying its own card on the taiotech hub — see the resolved open question in `docs/spec.md`.
+
 ## Related
 
 - `docs/spec.md` — what is being built and why

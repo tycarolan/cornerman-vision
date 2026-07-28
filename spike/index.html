@@ -70,6 +70,8 @@
   .blockbar{background:var(--surface);border:1px solid var(--border);border-radius:10px;
     padding:12px;margin-bottom:12px}
   .blockbar.live{border-color:var(--accent)}
+  /* Loud on purpose. A stalled loop used to be invisible from across a garage. */
+  .blockbar.stalled{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,var(--surface))}
   .brow{display:flex;align-items:center;gap:10px;margin-bottom:9px}
   .brow:last-child{margin-bottom:0}
   .brow label{font-family:var(--mono);font-size:10px;letter-spacing:.09em;color:var(--dim);
@@ -296,6 +298,30 @@ let runStart = 0, errCount = 0;
 let frameNo = 0;
 let shownPunches = 0;               // live display count, independent of recording
 
+// ---- loop liveness ----------------------------------------------------
+// The frame callback can stop firing while every other part of the page keeps
+// working. Exporting is the reliable way to cause it: the download raises the
+// iOS share sheet, the page is backgrounded, and requestVideoFrameCallback
+// simply stops — nothing re-arms it on the way back. Low Power Mode and thermal
+// throttling do the same thing for their own reasons.
+//
+// This cost a whole garage session. The loop died at the first export, the UI
+// stayed responsive, a block was recorded across 14.9 seconds of punching, and
+// the trace came out well-formed with f1 - f0 == 0 and zero detections. Nothing
+// on screen said otherwise.
+//
+// So liveness is tracked explicitly rather than assumed: `lastFrameAt` is the
+// ground truth, a watchdog re-arms a dead loop whatever killed it, and no block
+// may open while the loop is not delivering frames.
+let lastFrameAt = 0;
+const STALL_MS = 1500;              // ~30 missed frames at 20fps; well clear of a slow inference
+
+// Bumped on every re-arm. A callback carries the epoch it was scheduled under
+// and returns early if it no longer matches, so a zombie that fires late after
+// a restart cannot drive a second concurrent loop into the same counters.
+let loopEpoch = 0;
+let stalled = false;
+
 // ---- labelled blocks --------------------------------------------------
 // Session 1 exported an undifferentiated stream, so per-punch-type recall could
 // only be inferred and the model question stayed open. A block is a declaration
@@ -453,11 +479,16 @@ function step(name, reach, ang, t, fno) {
 }
 
 // ---- main loop --------------------------------------------------------
-async function onFrame(now, metadata) {
-  if (!running) return;
+async function onFrame(now, metadata, epoch) {
+  if (!running || epoch !== loopEpoch) return;
   try {
   const poses = await detector.estimatePoses(video, { maxPoses: 1, flipHorizontal: false });
+  // Re-checked after the await: if inference itself was what hung, the watchdog
+  // has already started a fresh loop and this frame must not double-count.
+  if (!running || epoch !== loopEpoch) return;
   const t = performance.now();
+  lastFrameAt = t;
+  if (stalled) clearStall();
   frameNo++; fpsFrames++;
   if (t - fpsT >= 500) {
     fps = fpsFrames * 1000 / (t - fpsT); fpsFrames = 0; fpsT = t;
@@ -594,12 +625,64 @@ function drawTrace() {
 }
 
 function schedule() {
+  const epoch = loopEpoch;
+  const cb = (now, metadata) => onFrame(now, metadata, epoch);
   if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-    video.requestVideoFrameCallback(onFrame);       // per decoded frame — the correct primitive
+    video.requestVideoFrameCallback(cb);            // per decoded frame — the correct primitive
   } else {
-    requestAnimationFrame(onFrame);                 // fallback; will duplicate/skip frames
+    requestAnimationFrame(cb);                      // fallback; will duplicate/skip frames
   }
 }
+
+/** True while the loop is actually delivering frames — not merely started. */
+function loopAlive() {
+  return running && performance.now() - lastFrameAt < STALL_MS;
+}
+
+function markStall() {
+  if (stalled) return;
+  stalled = true;
+  $('s-fps').textContent = '——';
+  $('s-fps').className = 'v warn';
+  $('blockbar').classList.add('stalled');
+}
+
+function clearStall() {
+  stalled = false;
+  $('blockbar').classList.remove('stalled');
+}
+
+/**
+ * Re-arm the frame loop after it has stopped delivering. Invalidates any
+ * in-flight callback first, so a late zombie cannot run alongside the new loop.
+ */
+function restartLoop(reason) {
+  if (!running) return;
+  loopEpoch++;
+  lastFrameAt = performance.now();   // grace period before the watchdog fires again
+  fpsT = lastFrameAt; fpsFrames = 0;
+  log(`Frame loop stalled (${reason}) — restarted.`, true);
+  schedule();
+}
+
+// The watchdog is the part that does not care why the loop died. visibilitychange
+// covers the export case specifically and recovers faster; this catches every
+// other cause — Low Power Mode, thermal throttling, a hung inference call.
+setInterval(() => {
+  if (!running) return;
+  if (performance.now() - lastFrameAt < STALL_MS) return;
+  markStall();
+  restartLoop('no frames for ' + Math.round((performance.now() - lastFrameAt) / 100) / 10 + 's');
+}, 500);
+
+// Returning to the foreground after the share sheet closes. The loop is already
+// dead by this point; nothing re-arms it on its own.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !running) return;
+  if (loopAlive()) return;
+  markStall();
+  restartLoop('page returned to foreground');
+});
 
 // ---- lifecycle --------------------------------------------------------
 async function openCamera() {
@@ -659,6 +742,10 @@ $('btn-start').addEventListener('click', async () => {
     // blocks after it also claimed. Reload the page to start a clean session.
     fpsT = performance.now();
     if (!runStart) runStart = fpsT;
+    // Counts as alive until the watchdog's first window elapses, so the very
+    // first block is not refused before a frame has had a chance to land.
+    lastFrameAt = fpsT;
+    loopEpoch++; clearStall();
     fpsFrames = 0; errCount = 0;
     for (const s of Object.values(side)) { s.up = false; s.last = -1e9; }
     paintBlock(); paintButtons();
@@ -719,6 +806,18 @@ function paintBlock() {
 }
 
 function openBlock(label, expected) {
+  // A block opened over a dead loop records nothing and says nothing — it was
+  // indistinguishable from a real block with zero detections until the trace was
+  // read offline. Refuse instead, kick the loop, and make the operator retry:
+  // losing the first two seconds of a block beats losing the whole round.
+  if (!loopAlive()) {
+    markStall();
+    log(running
+      ? 'BLOCK REFUSED — no frames arriving. Restarting the loop; start the block again.'
+      : 'BLOCK REFUSED — the loop is stopped. Press Start first.', true);
+    if (running) restartLoop('block start');
+    return;
+  }
   if (curBlock) closeBlock();
   curBlock = {
     id: ++blockSeq, label, hand: HAND_OF[label] ?? null, context, stance,

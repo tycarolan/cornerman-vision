@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens mirrored from the canonical TaioTech palette at
+ * /Users/tyler/Developer/taiotech/design/taiotech.css. That file is the
+ * shared source of truth; the values below are copied verbatim (not
+ * imported) so this repo's Tailwind pipeline can compile them. The palette
+ * is shared with Cornerman so the two surfaces read as one product.
+ */
+:root {
+  /* --- base ------------------------------------------------------------- */
+  --tt-bg:         #09090b;   /* zinc-950 — every surface starts here        */
+  --tt-surface:    #131316;   /* raised panels: cards, stat tiles, console   */
+  --tt-line:       #27272a;   /* zinc-800 — default hairline                 */
+  --tt-line-lit:   #3f3f46;   /* zinc-700 — hover / emphasis border          */
+
+  /* --- text ------------------------------------------------------------- */
+  --tt-text:       #fafafa;   /* zinc-50 — primary                          */
+  --tt-muted:      #a1a1aa;   /* zinc-400 — secondary prose, labels          */
+  --tt-dim:        #71717a;   /* zinc-500 — micro-labels, footers            */
+
+  /* --- accent ----------------------------------------------------------- */
+  --tt-accent:     #f97316;   /* orange-500                                  */
+  --tt-accent-ink: #0b0b0c;   /* text on a filled accent surface             */
+
+  /* --- status ----------------------------------------------------------- */
+  --tt-good:       #22c55e;
+  --tt-warn:       #f59e0b;
+  --tt-bad:        #ef4444;
+
+  /* --- categorical series -------------------------------------------------
+     Lead vs rear hand in Vision. */
+  --tt-series-1:   #38bdf8;   /* sky-400                                     */
+  --tt-series-2:   #f472b6;   /* pink-400                                    */
+
+  /* --- type -------------------------------------------------------------- */
+  --tt-font-sans: var(--font-geist-sans, ui-sans-serif), system-ui, -apple-system, sans-serif;
+  --tt-font-mono: var(--font-geist-mono, ui-monospace), "SF Mono", Menlo, monospace;
+
+  --tt-track-label: 0.14em;
+  --tt-track-wide:  0.2em;
+
+  --tt-radius:      10px;
+  --tt-radius-sm:   7px;
+}
+
+/* Tailwind v4 bridge — keeps utility names consistent with Cornerman/the hub. */
+@theme inline {
+  --color-background: var(--tt-bg);
+  --color-foreground: var(--tt-text);
+  --color-surface:    var(--tt-surface);
+  --color-muted:      var(--tt-muted);
+  --color-dim:        var(--tt-dim);
+  --color-line:       var(--tt-line);
+  --color-accent:     var(--tt-accent);
+  --color-good:       var(--tt-good);
+  --color-warn:       var(--tt-warn);
+  --color-bad:        var(--tt-bad);
+  --font-sans:        var(--tt-font-sans);
+  --font-mono:        var(--tt-font-mono);
+}
+
+body {
+  background: var(--tt-bg);
+  color: var(--tt-text);
+  font-family: var(--tt-font-sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

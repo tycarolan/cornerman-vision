@@ -64,6 +64,28 @@
     color:var(--dim);flex:none}
   .modelbar .tag.on{color:var(--good)}
 
+  /* Block bar. Session 1 exported unlabelled traces, so recall could only be
+     inferred — the spec asks session 2 for per-punch-type recall, which needs
+     someone to declare what was thrown and how many before throwing it. */
+  .blockbar{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    padding:12px;margin-bottom:12px}
+  .blockbar.live{border-color:var(--accent)}
+  .brow{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+  .brow:last-child{margin-bottom:0}
+  .brow label{font-family:var(--mono);font-size:10px;letter-spacing:.09em;color:var(--dim);
+    text-transform:uppercase;width:70px;flex:none}
+  .brow select,.brow input[type=number]{flex:1;background:var(--bg);color:var(--text);
+    border:1px solid var(--border);border-radius:7px;padding:9px;
+    font-family:var(--mono);font-size:12px;min-width:0}
+  .seg{display:flex;flex:1;gap:1px;background:var(--border);border:1px solid var(--border);
+    border-radius:7px;overflow:hidden}
+  .seg button{flex:1;min-width:0;margin:0;border:0;border-radius:0;padding:9px 6px;
+    background:var(--bg);font-size:11px;letter-spacing:.06em}
+  .seg button.on{background:var(--accent);color:#0b0b0c;font-weight:700}
+  .bstat{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.05em;
+    margin-top:9px;line-height:1.5;white-space:pre-wrap}
+  .bstat b{color:var(--accent)}
+
   .sliders{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px}
   .slider{display:flex;align-items:center;gap:11px;margin-bottom:9px}
   .slider:last-child{margin-bottom:0}
@@ -105,7 +127,7 @@
   <div class="controls">
     <button id="btn-start" class="primary">Start</button>
     <button id="btn-flip" disabled>Flip Cam</button>
-    <button id="btn-rec" disabled>Record</button>
+    <button id="btn-rec" disabled>Freestyle Rec</button>
     <button id="btn-export" disabled>Export</button>
     <button id="btn-copy" disabled>Copy JSON</button>
   </div>
@@ -119,6 +141,34 @@
       <option value="blazepose-full">BlazePose Full — 33 kp, +depth</option>
     </select>
     <span class="tag" id="depth-tag">2D</span>
+  </div>
+
+  <div class="blockbar" id="blockbar">
+    <div class="brow">
+      <label>Context</label>
+      <div class="seg" id="seg-ctx">
+        <button data-ctx="shadow" class="on">Shadowbox</button>
+        <button data-ctx="bag">Bag</button>
+      </div>
+    </div>
+    <div class="brow">
+      <label>Throwing</label>
+      <select id="sel-punch">
+        <option value="jab">1 · Jab (lead)</option>
+        <option value="cross">2 · Cross (rear)</option>
+        <option value="lead-hook">3 · Lead hook</option>
+        <option value="rear-hook">4 · Rear hook</option>
+        <option value="lead-uppercut">5 · Lead uppercut</option>
+        <option value="rear-uppercut">6 · Rear uppercut</option>
+        <option value="freestyle">Freestyle / mixed</option>
+      </select>
+    </div>
+    <div class="brow">
+      <label>Reps</label>
+      <input type="number" id="in-reps" min="1" max="100" step="1" value="10">
+      <button id="btn-block" style="flex:1" disabled>Start Block</button>
+    </div>
+    <div class="bstat" id="b-stat">No block running. Declare what you are about to throw, then Start Block.</div>
   </div>
 
   <div class="sliders">
@@ -156,7 +206,14 @@ Prop the phone at ~45° to your stance, full body in frame.</div>
     A rounded smear, or guard jitter reaching the same height as a punch, = the signal
     isn't separable and the product narrows to work rate + guard only.
     <b>Frames/punch under 4</b> means classification is dead on arrival.
-    Record a round, export the JSON, and keep it — that trace is the evidence.
+  </p>
+  <p class="note">
+    <b>Work in blocks.</b> Declare the punch type, context and rep count <i>before</i> throwing,
+    then Start Block, throw exactly that many, and End Block. Detected-against-expected is
+    the recall number the model decision turns on, and it cannot be recovered afterwards from
+    an unlabelled trace. Blocks accumulate across model switches; one Export carries the whole
+    session. <b>Reload the page to start a clean session</b> — nothing else clears it.
+    Full procedure: <code>docs/knowledge/processes/capture-protocol.md</code>.
   </p>
 </div>
 
@@ -185,6 +242,19 @@ let runStart = 0, errCount = 0;
 // fluctuating fps estimate, which ran 28% low on the first real capture.
 let frameNo = 0;
 let shownPunches = 0;               // live display count, independent of recording
+
+// ---- labelled blocks --------------------------------------------------
+// Session 1 exported an undifferentiated stream, so per-punch-type recall could
+// only be inferred and the model question stayed open. A block is a declaration
+// made BEFORE throwing — "ten jabs, on the bag, on this model" — which turns
+// detected-vs-expected into a number instead of an impression.
+const HAND_OF = {
+  'jab': 'lead', 'cross': 'rear',
+  'lead-hook': 'lead', 'rear-hook': 'rear',
+  'lead-uppercut': 'lead', 'rear-uppercut': 'rear',
+  'freestyle': null,
+};
+let blocks = [], curBlock = null, blockSeq = 0, context = 'shadow';
 
 const HIST = 260;
 const hist = { lead: [], rear: [], leadAng: [], rearAng: [], mark: [] };
@@ -294,10 +364,14 @@ function step(name, reach, ang, t, fno) {
         // outside it so the sliders stay tunable live — but the first capture
         // exported a punch that fired 2.3s after Stop Rec, so the punch list
         // and the sample trace described different spans of time.
-        if (recording) {
+        if (recording && curBlock) {
+          rec.b = curBlock.id;
           punches.push(rec); fppSum += nf; fppN++;
+          curBlock.detected++;
+          if (name === curBlock.hand) curBlock.detectedOnDeclaredHand++;
           $('s-fpp').textContent = (fppSum / fppN).toFixed(1);
           $('s-fpp').className = 'v ' + (fppSum / fppN < 4 ? 'warn' : 'ok');
+          paintBlock();
         }
         $('s-count').textContent = shownPunches;
         log(`${name.toUpperCase()} · ${Math.round(dur)}ms · ${nf}f · peak ${s.peak.toFixed(2)}`
@@ -366,7 +440,7 @@ async function onFrame(now, metadata) {
                     reach2d: +reach2.toFixed(3), elbow2d: +ang2.toFixed(1) };
       if (step(name, reach, ang, t, frameNo)) fired = true;
     }
-    if (recording) samples.push(row);
+    if (recording && curBlock) { row.b = curBlock.id; samples.push(row); }
   } else {
     pushHist('lead', null, null); pushHist('rear', null, null);
   }
@@ -506,10 +580,16 @@ $('btn-start').addEventListener('click', async () => {
     }
     running = true;
     b.disabled = false; b.textContent = 'Stop'; b.classList.remove('primary');
-    ['btn-flip', 'btn-rec', 'btn-export', 'btn-copy'].forEach(i => $(i).disabled = false);
-    fpsT = runStart = performance.now();
-    fpsFrames = 0; frameNo = 0; errCount = 0;
+    ['btn-flip', 'btn-rec', 'btn-block', 'btn-export', 'btn-copy'].forEach(i => $(i).disabled = false);
+    // frameNo stays monotonic for the life of the page. A session switches
+    // models several times, and each switch used to reset the counter — which
+    // left blocks recorded before the switch pointing at frame ranges that the
+    // blocks after it also claimed. Reload the page to start a clean session.
+    fpsT = performance.now();
+    if (!runStart) runStart = fpsT;
+    fpsFrames = 0; errCount = 0;
     for (const s of Object.values(side)) { s.up = false; s.last = -1e9; }
+    paintBlock(); paintButtons();
     schedule();
   } catch (err) {
     b.disabled = false; b.textContent = 'Start';
@@ -521,6 +601,12 @@ $('btn-start').addEventListener('click', async () => {
 // Switching models tears the detector down; the next Start reloads it. Each
 // model has its own warmup cost, so this is deliberately not automatic.
 $('sel-model').addEventListener('change', e => {
+  // Closing the open block first is load-bearing. The previous build disposed
+  // the detector but left `recording` set, so the next Start appended frames
+  // from a second model into the same arrays with nothing marking the seam —
+  // one trace, two models, no way to separate them afterwards. The comparison
+  // between models is the entire purpose of the session.
+  if (curBlock) { log('Model switched mid-block — closing it first.', true); closeBlock(); }
   modelKey = e.target.value; M = MODELS[modelKey];
   running = false;
   if (detector) { try { detector.dispose(); } catch (_) {} detector = null; }
@@ -535,31 +621,106 @@ $('sel-model').addEventListener('change', e => {
 
 $('btn-flip').addEventListener('click', async () => {
   facing = facing === 'environment' ? 'user' : 'environment';
-  await openCamera(); log(`Camera → ${facing}`);
+  await openCamera();
+  // Reopening the stream leaves per-side punch state and the fps window stale.
+  // A side left mid-punch across the flip fires a spurious detection on the far
+  // side of a gap it never actually travelled.
+  for (const s of Object.values(side)) { s.up = false; s.last = -1e9; }
+  fpsT = performance.now(); fpsFrames = 0;
+  log(`Camera → ${facing} · punch state reset`);
+});
+
+// ---- block lifecycle --------------------------------------------------
+function paintBlock() {
+  const el = $('b-stat');
+  if (!curBlock) {
+    el.textContent = blocks.length
+      ? `${blocks.length} block(s) recorded · ${punches.length} punches · ready for the next.`
+      : 'No block running. Declare what you are about to throw, then Start Block.';
+    return;
+  }
+  const exp = curBlock.expected;
+  el.innerHTML = `● <b>${curBlock.label}</b> · ${curBlock.context} · ${MODELS[curBlock.model].label}`
+    + `\n<b>${curBlock.detected}</b>${exp ? ` / ${exp}` : ''} detected`
+    + (curBlock.hand ? ` · <b>${curBlock.detectedOnDeclaredHand}</b> on the declared ${curBlock.hand} hand` : '');
+}
+
+function openBlock(label, expected) {
+  if (curBlock) closeBlock();
+  curBlock = {
+    id: ++blockSeq, label, hand: HAND_OF[label] ?? null, context,
+    model: modelKey, depthActive: usingDepth, expected,
+    t0: Math.round(performance.now()), f0: frameNo,
+    detected: 0, detectedOnDeclaredHand: 0,
+  };
+  recording = true;
+  for (const s of Object.values(side)) { s.up = false; s.last = -1e9; }
+  log(`● BLOCK ${curBlock.id} — ${label}${expected ? ` ×${expected}` : ''} · ${context}`
+    + ` · ${MODELS[modelKey].label}`, true);
+  paintBlock(); paintButtons();
+}
+
+function closeBlock() {
+  if (!curBlock) return;
+  curBlock.t1 = Math.round(performance.now());
+  curBlock.f1 = frameNo;
+  blocks.push(curBlock);
+  const b = curBlock, exp = b.expected;
+  log(`■ BLOCK ${b.id} closed — ${b.detected}${exp ? `/${exp}` : ''} detected`
+    + (b.hand ? `, ${b.detectedOnDeclaredHand} on the ${b.hand} hand` : '')
+    + (exp ? ` · recall ${(b.detected / exp * 100).toFixed(0)}%` : ''), true);
+  curBlock = null; recording = false;
+  paintBlock(); paintButtons();
+}
+
+function paintButtons() {
+  const bb = $('btn-block'), br = $('btn-rec');
+  const freestyle = curBlock?.label === 'freestyle';
+  bb.textContent = curBlock && !freestyle ? 'End Block' : 'Start Block';
+  bb.classList.toggle('rec', !!curBlock && !freestyle);
+  br.textContent = freestyle ? 'Stop Rec' : 'Freestyle Rec';
+  br.classList.toggle('rec', freestyle);
+  $('blockbar').classList.toggle('live', !!curBlock);
+}
+
+$('seg-ctx').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  context = b.dataset.ctx;
+  [...e.currentTarget.children].forEach(c => c.classList.toggle('on', c === b));
+  // A block carries the context it was opened with; changing it mid-block would
+  // relabel data already captured, so the change applies to the next block only.
+  log(`Context → ${context}${curBlock ? ' (applies to the next block)' : ''}`);
+});
+
+$('btn-block').addEventListener('click', () => {
+  if (curBlock && curBlock.label !== 'freestyle') { closeBlock(); return; }
+  const reps = parseInt($('in-reps').value, 10);
+  openBlock($('sel-punch').value, Number.isFinite(reps) && reps > 0 ? reps : null);
 });
 
 $('btn-rec').addEventListener('click', () => {
-  recording = !recording;
-  const b = $('btn-rec');
-  b.textContent = recording ? 'Stop Rec' : 'Record';
-  b.classList.toggle('rec', recording);
-  if (recording) { samples = []; punches = []; fppSum = fppN = 0; shownPunches = 0;
-    $('s-count').textContent = '0'; $('s-fpp').textContent = '—';
-    log('● Recording…', true); }
-  else log(`Recorded ${samples.length} frames, ${punches.length} punches.`, true);
+  if (curBlock?.label === 'freestyle') { closeBlock(); return; }
+  openBlock('freestyle', null);
 });
 
 function buildPayload() {
   const span = (performance.now() - runStart) / 1000;
+  // An open block is included as-is rather than silently dropped — exporting
+  // mid-block is a normal thing to do when a round ends unexpectedly.
+  const allBlocks = curBlock ? [...blocks, { ...curBlock, f1: frameNo, open: true }] : blocks;
   return {
+    // Bumped whenever the shape below changes. The analyzer refuses versions it
+    // does not know rather than misreading fields that moved.
+    schema: 2,
     ua: navigator.userAgent, cfg,
     model: modelKey, depthActive: usingDepth,
+    modelsUsed: [...new Set(allBlocks.map(b => b.model))],
     // meanFps over the whole run, from the real frame counter — not the last
     // 500ms window, which is what the previous build exported as "meanFps".
     meanFps: span > 0 ? +(frameNo / span).toFixed(2) : null,
     inferenceFrames: frameNo, runSeconds: +span.toFixed(2),
     framesPerPunch: fppN ? +(fppSum / fppN).toFixed(2) : null,
-    punches, samples,
+    blocks: allBlocks, punches, samples,
   };
 }
 

@@ -1,6 +1,10 @@
 # dependencies
 /node_modules
 
+# Branch worktrees, named after the branch they hold — the convention shared with
+# the sibling repos. They carry their own node_modules and build output.
+/.claude/worktrees/
+
 # testing
 /coverage
 

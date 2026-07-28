@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The offline trace analyzer in `tools/`, with `npm run analyze`.
 - The Next.js app shell, on the shared TaioTech token set.
 
+### Changed
+
+- The spike's Vercel project is connected to GitHub with `main` as the production branch and `spike/` as the root directory, so merges deploy and pull requests get preview URLs.
+- Commits in this repository are authored from the address registered on the GitHub account. Vercel will not build a Git-triggered deployment whose author it cannot resolve to an authorized user.
+- Resolved the open question on integration with Cornerman: the two stay separate applications, each with its own card on the taiotech hub.
+
 ### Fixed
 
 - Switching models mid-recording left the recording flag set and appended a second model's frames into the same trace with nothing marking the seam. The switch now closes the open block.

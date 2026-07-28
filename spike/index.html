@@ -31,7 +31,18 @@
   .stat .v.warn{color:var(--bad)} .stat .v.ok{color:var(--good)}
 
   canvas{display:block;width:100%;border-radius:10px;background:#000;border:1px solid var(--border)}
-  #view{aspect-ratio:4/3;object-fit:cover}
+
+  /* The <video> must be in the DOM and rendered. iOS Safari will not decode
+     frames from a detached video element — requestVideoFrameCallback simply
+     never fires and the canvas stays black with no error. The skeleton canvas
+     is a transparent overlay, so the camera stays visible even if pose
+     estimation fails outright. */
+  .stage{position:relative;width:100%;aspect-ratio:4/3;border-radius:10px;
+    overflow:hidden;background:#000;border:1px solid var(--border)}
+  .stage video,.stage #view{position:absolute;inset:0;width:100%;height:100%;
+    display:block;border:0;border-radius:0}
+  .stage video{object-fit:fill;background:#000}
+  .stage #view{background:transparent}
   #trace{height:190px;margin-top:10px}
 
   .controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
@@ -42,6 +53,16 @@
   button.primary{background:var(--accent);color:#0b0b0c;border-color:var(--accent);font-weight:700}
   button.rec{background:var(--bad);border-color:var(--bad);color:#fff}
   button:disabled{opacity:.4}
+
+  .modelbar{display:flex;align-items:center;gap:10px;background:var(--surface);
+    border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px}
+  .modelbar label{font-family:var(--mono);font-size:10px;letter-spacing:.09em;
+    color:var(--dim);text-transform:uppercase;flex:none}
+  .modelbar select{flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);
+    border-radius:7px;padding:9px;font-family:var(--mono);font-size:12px}
+  .modelbar .tag{font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+    color:var(--dim);flex:none}
+  .modelbar .tag.on{color:var(--good)}
 
   .sliders{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px}
   .slider{display:flex;align-items:center;gap:11px;margin-bottom:9px}
@@ -76,13 +97,28 @@
     <div class="stat"><div class="v" id="s-conf">—</div><div class="k">Confidence</div></div>
   </div>
 
-  <canvas id="view"></canvas>
+  <div class="stage" id="stage">
+    <video id="cam" playsinline webkit-playsinline muted autoplay></video>
+    <canvas id="view"></canvas>
+  </div>
 
   <div class="controls">
     <button id="btn-start" class="primary">Start</button>
     <button id="btn-flip" disabled>Flip Cam</button>
     <button id="btn-rec" disabled>Record</button>
     <button id="btn-export" disabled>Export</button>
+    <button id="btn-copy" disabled>Copy JSON</button>
+  </div>
+
+  <div class="modelbar">
+    <label for="sel-model">Model</label>
+    <select id="sel-model">
+      <option value="movenet-lightning">MoveNet Lightning — 17 kp, 2D</option>
+      <option value="movenet-thunder">MoveNet Thunder — 17 kp, 2D</option>
+      <option value="blazepose-lite">BlazePose Lite — 33 kp, +depth</option>
+      <option value="blazepose-full">BlazePose Full — 33 kp, +depth</option>
+    </select>
+    <span class="tag" id="depth-tag">2D</span>
   </div>
 
   <div class="sliders">
@@ -138,10 +174,17 @@ const $ = id => document.getElementById(id);
 const view = $('view'), vctx = view.getContext('2d');
 const trace = $('trace'), tctx = trace.getContext('2d');
 
-let video, detector, running = false, facing = 'environment';
+let video = $('cam'), detector, running = false, facing = 'environment';
 let recording = false, samples = [], punches = [];
-let frames = 0, fpsT = performance.now(), fps = 0;
-let lastT = 0;
+let fpsFrames = 0, fpsT = performance.now(), fps = 0;
+let runStart = 0, errCount = 0;
+
+// Monotonic count of frames we actually ran inference on. framesPerPunch is the
+// number this entire spike exists to produce, so it has to come from a real
+// counter — the previous build reconstructed it from wall-clock time and a
+// fluctuating fps estimate, which ran 28% low on the first real capture.
+let frameNo = 0;
+let shownPunches = 0;               // live display count, independent of recording
 
 const HIST = 260;
 const hist = { lead: [], rear: [], leadAng: [], rearAng: [], mark: [] };
@@ -163,6 +206,11 @@ function log(msg, hi) {
   el.scrollTop = el.scrollHeight;
 }
 
+// On a phone there is no console. Anything that would otherwise die silently
+// has to surface in the log or it is indistinguishable from "nothing happened".
+addEventListener('error', e => log(`JS ERROR: ${e.message}`, true));
+addEventListener('unhandledrejection', e => log(`UNHANDLED: ${e.reason?.message ?? e.reason}`, true));
+
 // ---- geometry helpers -------------------------------------------------
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 function angleAt(v, a, b) {              // angle at joint v between rays v→a and v→b
@@ -170,6 +218,55 @@ function angleAt(v, a, b) {              // angle at joint v between rays v→a 
   const d = (Math.hypot(ax, ay) * Math.hypot(bx, by)) || 1e-6;
   return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / d))) * 180 / Math.PI;
 }
+
+// 3D variants. The rear hand is effectively invisible to the 2D metric at an
+// oblique camera angle — a cross travels along the camera's depth axis and
+// barely moves in projection (measured: rear p99 reach 0.86 vs lead 1.61).
+// Models that emit keypoints3D let the same measurement be taken with depth.
+const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0));
+function angleAt3(v, a, b) {
+  const ax = a.x - v.x, ay = a.y - v.y, az = (a.z ?? 0) - (v.z ?? 0);
+  const bx = b.x - v.x, by = b.y - v.y, bz = (b.z ?? 0) - (v.z ?? 0);
+  const d = (Math.hypot(ax, ay, az) * Math.hypot(bx, by, bz)) || 1e-6;
+  return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / d))) * 180 / Math.PI;
+}
+
+// Model registry. MoveNet uses 17 COCO keypoints; BlazePose uses 33 with a
+// different index layout, so joint indices and skeleton edges travel with the
+// model rather than being hard-coded. BlazePose runs on the 'tfjs' runtime
+// deliberately — the 'mediapipe' runtime pulls the broken @mediapipe/pose dep.
+const MODELS = {
+  'movenet-lightning': {
+    label: 'MoveNet Lightning', depth: false,
+    kp: { lsh: 5, rsh: 6, lel: 7, rel: 8, lwr: 9, rwr: 10 },
+    skel: [[5,6],[5,7],[7,9],[6,8],[8,10],[5,11],[6,12],[11,12],[11,13],[13,15],[12,14],[14,16]],
+    create: () => poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,
+      { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }),
+  },
+  'movenet-thunder': {
+    label: 'MoveNet Thunder', depth: false,
+    kp: { lsh: 5, rsh: 6, lel: 7, rel: 8, lwr: 9, rwr: 10 },
+    skel: [[5,6],[5,7],[7,9],[6,8],[8,10],[5,11],[6,12],[11,12],[11,13],[13,15],[12,14],[14,16]],
+    create: () => poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,
+      { modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER }),
+  },
+  'blazepose-lite': {
+    label: 'BlazePose Lite', depth: true,
+    kp: { lsh: 11, rsh: 12, lel: 13, rel: 14, lwr: 15, rwr: 16 },
+    skel: [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]],
+    create: () => poseDetection.createDetector(poseDetection.SupportedModels.BlazePose,
+      { runtime: 'tfjs', modelType: 'lite' }),
+  },
+  'blazepose-full': {
+    label: 'BlazePose Full', depth: true,
+    kp: { lsh: 11, rsh: 12, lel: 13, rel: 14, lwr: 15, rwr: 16 },
+    skel: [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]],
+    create: () => poseDetection.createDetector(poseDetection.SupportedModels.BlazePose,
+      { runtime: 'tfjs', modelType: 'full' }),
+  },
+};
+let modelKey = 'movenet-lightning', M = MODELS[modelKey];
+let usingDepth = false;
 
 // ---- per-side punch state machine -------------------------------------
 // A punch = reach rises above threshold, then retracts below it again.
@@ -180,23 +277,31 @@ const side = {
 };
 let fppSum = 0, fppN = 0;
 
-function step(name, reach, ang, t, frameNo) {
+function step(name, reach, ang, t, fno) {
   const s = side[name];
   if (!s.up && reach > cfg.thresh && (t - s.last) > cfg.refract) {
-    s.up = true; s.t0 = t; s.f0 = frameNo; s.peak = reach; s.peakAng = ang;
+    s.up = true; s.t0 = t; s.f0 = fno; s.peak = reach; s.peakAng = ang;
   } else if (s.up) {
     if (reach > s.peak) { s.peak = reach; s.peakAng = ang; }
     if (reach < cfg.thresh * 0.92) {          // hysteresis on the way down
       s.up = false; s.last = t;
-      const dur = t - s.t0, nf = frameNo - s.f0;
+      const dur = t - s.t0, nf = fno - s.f0;
       if (nf >= 1 && dur < 900) {
-        fppSum += nf; fppN++;
-        punches.push({ hand: name, t: Math.round(s.t0), ms: Math.round(dur),
-                       frames: nf, peak: +s.peak.toFixed(3), elbow: Math.round(s.peakAng) });
-        $('s-count').textContent = punches.length;
-        $('s-fpp').textContent = (fppSum / fppN).toFixed(1);
-        $('s-fpp').className = 'v ' + (fppSum / fppN < 4 ? 'warn' : 'ok');
-        log(`${name.toUpperCase()} · ${Math.round(dur)}ms · ${nf}f · peak ${s.peak.toFixed(2)} · elbow ${Math.round(s.peakAng)}°`, true);
+        shownPunches++;
+        const rec = { hand: name, t: Math.round(s.t0), ms: Math.round(dur),
+                      frames: nf, peak: +s.peak.toFixed(3), elbow: Math.round(s.peakAng) };
+        // Persist only inside the recorded window. Detection keeps running
+        // outside it so the sliders stay tunable live — but the first capture
+        // exported a punch that fired 2.3s after Stop Rec, so the punch list
+        // and the sample trace described different spans of time.
+        if (recording) {
+          punches.push(rec); fppSum += nf; fppN++;
+          $('s-fpp').textContent = (fppSum / fppN).toFixed(1);
+          $('s-fpp').className = 'v ' + (fppSum / fppN < 4 ? 'warn' : 'ok');
+        }
+        $('s-count').textContent = shownPunches;
+        log(`${name.toUpperCase()} · ${Math.round(dur)}ms · ${nf}f · peak ${s.peak.toFixed(2)}`
+          + ` · elbow ${Math.round(s.peakAng)}°${recording ? '' : '  ·  not recording'}`, true);
         return true;
       }
     }
@@ -205,19 +310,21 @@ function step(name, reach, ang, t, frameNo) {
 }
 
 // ---- main loop --------------------------------------------------------
-async function onFrame(now) {
+async function onFrame(now, metadata) {
   if (!running) return;
-
+  try {
   const poses = await detector.estimatePoses(video, { maxPoses: 1, flipHorizontal: false });
   const t = performance.now();
-  frames++;
+  frameNo++; fpsFrames++;
   if (t - fpsT >= 500) {
-    fps = frames * 1000 / (t - fpsT); frames = 0; fpsT = t;
+    fps = fpsFrames * 1000 / (t - fpsT); fpsFrames = 0; fpsT = t;
     $('s-fps').textContent = fps.toFixed(0);
     $('s-fps').className = 'v ' + (fps < 20 ? 'warn' : 'ok');
   }
 
-  vctx.drawImage(video, 0, 0, view.width, view.height);
+  // Transparent overlay — the <video> underneath supplies the picture, so a
+  // pose failure degrades to "camera with no skeleton", not a black rectangle.
+  vctx.clearRect(0, 0, view.width, view.height);
 
   let fired = false;
   if (poses[0]) {
@@ -229,22 +336,35 @@ async function onFrame(now) {
 
     drawSkeleton(kp);
 
-    const scale = dist(g(5), g(6)) || 1e-6;           // shoulder width = body scale
+    const K = M.kp;
+    const kp3 = poses[0].keypoints3D;
+    const scale = dist(g(K.lsh), g(K.rsh)) || 1e-6;   // shoulder width = body scale
+    const scale3 = kp3 ? dist3(kp3[K.lsh], kp3[K.rsh]) : 0;
+    const has3 = !!(kp3 && scale3 > 1e-6);
+    if (has3 !== usingDepth) {
+      usingDepth = has3;
+      $('depth-tag').textContent = has3 ? '3D' : '2D';
+      $('depth-tag').className = 'tag' + (has3 ? ' on' : '');
+    }
     const ok = k => k.score >= cfg.minConf;
 
-    const sides = {
-      lead: { sh: g(5), el: g(7), wr: g(9) },          // left
-      rear: { sh: g(6), el: g(8), wr: g(10) },         // right
-    };
-    const row = { t: Math.round(t), fps: +fps.toFixed(1), conf: +meanConf.toFixed(3) };
+    const idx = { lead: [K.lsh, K.lel, K.lwr], rear: [K.rsh, K.rel, K.rwr] };
+    const row = { t: Math.round(t), f: frameNo, fps: +fps.toFixed(1),
+                  conf: +meanConf.toFixed(3), d3: has3 };
 
-    for (const [name, j] of Object.entries(sides)) {
-      if (!(ok(j.sh) && ok(j.el) && ok(j.wr))) { pushHist(name, null, null); continue; }
-      const reach = dist(j.wr, j.sh) / scale;
-      const ang = angleAt(j.el, j.sh, j.wr);
+    for (const [name, [iSh, iEl, iWr]] of Object.entries(idx)) {
+      const sh = kp[iSh], el = kp[iEl], wr = kp[iWr];
+      if (!(ok(sh) && ok(el) && ok(wr))) { pushHist(name, null, null); continue; }
+      const reach2 = dist(wr, sh) / scale;
+      const ang2 = angleAt(el, sh, wr);
+      // Depth-aware when the model provides it. The 2D values are recorded
+      // alongside regardless, so both metrics are measured on the same punches.
+      const reach = has3 ? dist3(kp3[iWr], kp3[iSh]) / scale3 : reach2;
+      const ang = has3 ? angleAt3(kp3[iEl], kp3[iSh], kp3[iWr]) : ang2;
       pushHist(name, reach, ang);
-      row[name] = { reach: +reach.toFixed(3), elbow: +ang.toFixed(1) };
-      if (step(name, reach, ang, t, Math.round(t / (1000 / Math.max(fps, 1))))) fired = true;
+      row[name] = { reach: +reach.toFixed(3), elbow: +ang.toFixed(1),
+                    reach2d: +reach2.toFixed(3), elbow2d: +ang2.toFixed(1) };
+      if (step(name, reach, ang, t, frameNo)) fired = true;
     }
     if (recording) samples.push(row);
   } else {
@@ -254,8 +374,9 @@ async function onFrame(now) {
   hist.mark.push(fired ? 1 : 0);
   if (hist.mark.length > HIST) hist.mark.shift();
   drawTrace();
-
-  lastT = t;
+  } catch (err) {
+    if (++errCount <= 5) log(`FRAME ERROR: ${err.message}`, true);
+  }
   schedule();
 }
 
@@ -265,21 +386,22 @@ function pushHist(name, reach, ang) {
   if (r.length > HIST) { r.shift(); a.shift(); }
 }
 
-const SKEL = [[5,6],[5,7],[7,9],[6,8],[8,10],[5,11],[6,12],[11,12],[11,13],[13,15],[12,14],[14,16]];
+// The canvas is sized to the video's intrinsic dimensions and the stage box is
+// set to the same aspect ratio, so keypoints map 1:1 with no scaling factor.
 function drawSkeleton(kp) {
-  const sx = view.width / video.videoWidth, sy = view.height / video.videoHeight;
   vctx.lineWidth = 3; vctx.strokeStyle = '#22c55e';
-  for (const [a, b] of SKEL) {
+  for (const [a, b] of M.skel) {
+    if (!kp[a] || !kp[b]) continue;
     if (kp[a].score < cfg.minConf || kp[b].score < cfg.minConf) continue;
     vctx.beginPath();
-    vctx.moveTo(kp[a].x * sx, kp[a].y * sy);
-    vctx.lineTo(kp[b].x * sx, kp[b].y * sy);
+    vctx.moveTo(kp[a].x, kp[a].y);
+    vctx.lineTo(kp[b].x, kp[b].y);
     vctx.stroke();
   }
-  for (const i of [9, 10]) {                        // wrists get emphasis
-    if (kp[i].score < cfg.minConf) continue;
-    vctx.fillStyle = i === 9 ? '#38bdf8' : '#f472b6';
-    vctx.beginPath(); vctx.arc(kp[i].x * sx, kp[i].y * sy, 7, 0, 7); vctx.fill();
+  for (const [i, col] of [[M.kp.lwr, '#38bdf8'], [M.kp.rwr, '#f472b6']]) {
+    if (!kp[i] || kp[i].score < cfg.minConf) continue;
+    vctx.fillStyle = col;
+    vctx.beginPath(); vctx.arc(kp[i].x, kp[i].y, 7, 0, 7); vctx.fill();
   }
 }
 
@@ -335,22 +457,27 @@ function schedule() {
 
 // ---- lifecycle --------------------------------------------------------
 async function openCamera() {
-  if (video?.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  if (!navigator.mediaDevices?.getUserMedia)
+    throw new Error('getUserMedia unavailable — needs HTTPS or localhost');
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: facing, width: { ideal: 640 }, height: { ideal: 480 },
+    video: { facingMode: { ideal: facing }, width: { ideal: 640 }, height: { ideal: 480 },
              frameRate: { ideal: 60 } },
     audio: false,
   });
-  video = video || Object.assign(document.createElement('video'),
-    { playsInline: true, muted: true, autoplay: true });
-  video.setAttribute('playsinline', '');
   video.srcObject = stream;
+  if (video.readyState < 2)
+    await new Promise(r => video.addEventListener('loadedmetadata', r, { once: true }));
   await video.play();
 
-  const s = stream.getVideoTracks()[0].getSettings();
-  view.width = 640; view.height = 480;
+  // Match the canvas to the video's real dimensions and the stage box to its
+  // aspect ratio, so the skeleton overlay lines up without a scaling factor.
+  view.width = video.videoWidth; view.height = video.videoHeight;
+  $('stage').style.aspectRatio = `${video.videoWidth}/${video.videoHeight}`;
   trace.width = trace.clientWidth * 2; trace.height = 380;
-  log(`Camera ${s.width}×${s.height} @ ${s.frameRate || '?'}fps requested`, true);
+
+  const s = stream.getVideoTracks()[0].getSettings();
+  log(`Camera ${video.videoWidth}×${video.videoHeight} @ ${s.frameRate || '?'}fps`, true);
 }
 
 $('btn-start').addEventListener('click', async () => {
@@ -365,28 +492,45 @@ $('btn-start').addEventListener('click', async () => {
     if (!detector) {
       await tf.setBackend('webgl'); await tf.ready();
       log(`Backend: ${tf.getBackend()}`);
-      detector = await poseDetection.createDetector(
-        poseDetection.SupportedModels.MoveNet,
-        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING });
+      b.textContent = 'Loading…';
+      detector = await M.create();
 
       // Warm up. The first inference compiles shaders and takes seconds —
       // without this it lands inside the first FPS window and reports a lie.
       b.textContent = 'Warming…';
       const warm = document.createElement('canvas'); warm.width = warm.height = 192;
+      warm.getContext('2d').fillRect(0, 0, 192, 192);
       const t0 = performance.now();
       await detector.estimatePoses(warm);
-      log(`MoveNet Lightning ready — warmup ${Math.round(performance.now() - t0)}ms.`, true);
+      log(`${M.label} ready — warmup ${Math.round(performance.now() - t0)}ms.`, true);
     }
     running = true;
     b.disabled = false; b.textContent = 'Stop'; b.classList.remove('primary');
-    ['btn-flip', 'btn-rec', 'btn-export'].forEach(i => $(i).disabled = false);
-    fpsT = performance.now(); frames = 0;
+    ['btn-flip', 'btn-rec', 'btn-export', 'btn-copy'].forEach(i => $(i).disabled = false);
+    fpsT = runStart = performance.now();
+    fpsFrames = 0; frameNo = 0; errCount = 0;
+    for (const s of Object.values(side)) { s.up = false; s.last = -1e9; }
     schedule();
   } catch (err) {
     b.disabled = false; b.textContent = 'Start';
     log(`ERROR: ${err.message}`, true);
     log('Camera needs HTTPS or localhost. On a phone, deploy it — a LAN IP over http will be blocked.');
   }
+});
+
+// Switching models tears the detector down; the next Start reloads it. Each
+// model has its own warmup cost, so this is deliberately not automatic.
+$('sel-model').addEventListener('change', e => {
+  modelKey = e.target.value; M = MODELS[modelKey];
+  running = false;
+  if (detector) { try { detector.dispose(); } catch (_) {} detector = null; }
+  const b = $('btn-start');
+  b.disabled = false; b.textContent = 'Start'; b.classList.add('primary');
+  usingDepth = false;
+  $('depth-tag').textContent = M.depth ? '3D avail' : '2D';
+  $('depth-tag').className = 'tag';
+  for (const k of ['lead', 'rear', 'leadAng', 'rearAng', 'mark']) hist[k].length = 0;
+  log(`Model → ${M.label}. Press Start to load it.`, true);
 });
 
 $('btn-flip').addEventListener('click', async () => {
@@ -399,23 +543,46 @@ $('btn-rec').addEventListener('click', () => {
   const b = $('btn-rec');
   b.textContent = recording ? 'Stop Rec' : 'Record';
   b.classList.toggle('rec', recording);
-  if (recording) { samples = []; punches = []; fppSum = fppN = 0;
-    $('s-count').textContent = '0'; log('● Recording…', true); }
+  if (recording) { samples = []; punches = []; fppSum = fppN = 0; shownPunches = 0;
+    $('s-count').textContent = '0'; $('s-fpp').textContent = '—';
+    log('● Recording…', true); }
   else log(`Recorded ${samples.length} frames, ${punches.length} punches.`, true);
 });
 
-$('btn-export').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify({
+function buildPayload() {
+  const span = (performance.now() - runStart) / 1000;
+  return {
     ua: navigator.userAgent, cfg,
-    meanFps: +fps.toFixed(1),
+    model: modelKey, depthActive: usingDepth,
+    // meanFps over the whole run, from the real frame counter — not the last
+    // 500ms window, which is what the previous build exported as "meanFps".
+    meanFps: span > 0 ? +(frameNo / span).toFixed(2) : null,
+    inferenceFrames: frameNo, runSeconds: +span.toFixed(2),
     framesPerPunch: fppN ? +(fppSum / fppN).toFixed(2) : null,
     punches, samples,
-  }, null, 2)], { type: 'application/json' });
+  };
+}
+
+$('btn-export').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(buildPayload(), null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `vision-spike-${Date.now()}.json`;
   a.click();
   log('Exported.', true);
+});
+
+// Getting a downloaded file off a phone is a genuine chore; the clipboard is
+// the shorter path when the run happens on the device it's meant for.
+$('btn-copy').addEventListener('click', async () => {
+  const p = buildPayload();
+  const brief = { ...p, samples: `<${p.samples.length} rows omitted>` };
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(brief, null, 2));
+    log(`Copied summary + ${p.punches.length} punches to clipboard.`, true);
+  } catch (err) {
+    log(`Clipboard blocked: ${err.message} — use Export instead.`, true);
+  }
 });
 </script>
 </body>

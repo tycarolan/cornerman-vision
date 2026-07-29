@@ -2,6 +2,9 @@
   "name": "cornerman-vision",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.9"
+  },
   "scripts": {
     "dev": "npm run assets && next dev",
     "assets": "mkdir -p public/spike && cp spike/index.html public/spike/index.html && cp docs/mockups.html public/mockups.html",
@@ -9,6 +12,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "analyze": "tsx tools/analyze-trace.ts",

@@ -2,7 +2,7 @@
 
 A phone propped at an angle watches a boxing round and reports what happened: how many punches, which ones, how the work rate held up, and whether the guard stayed up. On-device, in a browser. No video is written to disk or transmitted — frames pass from camera to inference and are discarded.
 
-Companion to [Cornerman](https://github.com/TaioTech/cornerman), which calls the combos. This answers whether you threw them.
+Companion to [Cornerman](https://github.com/tycarolan/cornerman), which calls the combos. This answers whether you threw them.
 
 Working title.
 
